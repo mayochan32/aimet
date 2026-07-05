@@ -1,4 +1,4 @@
-import { fmtTokens, fmtHours } from './report.js';
+import { fmtTokens, fmtHours, costLabel } from './report.js';
 
 /** Markdown renderers for the three output levels: report / session / detail. */
 
@@ -90,7 +90,7 @@ export function sessionMd(r: Record<string, unknown>): string {
         ['cache read', num(r.cache_read_tokens).toLocaleString()],
         ['cache write', num(r.cache_write_tokens).toLocaleString()],
         ['reasoning', num(r.reasoning_tokens).toLocaleString()],
-        ['cost (API-equivalent)', r.cost_usd == null ? 'unknown model' : '$' + num(r.cost_usd).toFixed(4)],
+        ['cost', r.cost_usd == null ? 'unknown model' : '$' + num(r.cost_usd).toFixed(4) + costLabel(r)],
         ['log file', String(r.log_path)],
       ]
     ),
@@ -134,6 +134,27 @@ export function detailMd(d: Record<string, unknown>): string {
             String(u.service_tier ?? ''),
           ];
         })
+      ),
+      ''
+    );
+  }
+
+  if (d.tool === 'copilot') {
+    const reqs = d.requests as Record<string, unknown>[];
+    out.push('## Requests', '');
+    out.push(
+      table(
+        ['timestamp', 'model', 'prompt', 'in', 'out', 'credits', 'elapsed', 'tool rounds'],
+        reqs.map((q) => [
+          fmtLocal(new Date(Number(q.timestamp)).toISOString()),
+          String(q.resolvedModel ?? q.modelId ?? ''),
+          String(q.message ?? '').slice(0, 40),
+          String(q.promptTokens ?? '-'),
+          String(q.completionTokens ?? '-'),
+          q.copilotCredits == null ? '-' : Number(q.copilotCredits).toFixed(3),
+          q.elapsedMs == null ? '-' : (Number(q.elapsedMs) / 1000).toFixed(1) + 's',
+          String(q.toolCallRounds ?? 0),
+        ])
       ),
       ''
     );

@@ -14,7 +14,10 @@
 |---|---|---|---|
 | Claude Code | `~/.claude/projects/**/*.jsonl` | 実測（in / out / cacheR / cacheW、1h/5mキャッシュ内訳） | ✅ |
 | Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl` | 実測（in / cached / out / reasoning）＋レート制限時系列 | ✅ |
-| GitHub Copilot | `~/.copilot/session-state/` | 総量のみ・一部推定 | 🚧 予定 |
+| GitHub Copilot (VS Code Chat) | `<userData>/User/workspaceStorage/<hash>/chatSessions/*.jsonl` | 実測（prompt / completion）＋消費クレジット | ✅ |
+| GitHub Copilot CLI | `~/.copilot/session-state/` | 総量のみ | 🚧 予定 |
+
+> Copilotのログの場所（macOS）: `~/Library/Application Support/Code/User/workspaceStorage/`。記録されるのは**Chat/エージェントモードの対話のみ**で、インライン補完は残りません。VS Code Insiders等を使う場合は `aimet collect --dir` でパスを指定してください。
 
 ## インストール
 
@@ -191,7 +194,7 @@ cost = ( input × 入力単価
 
 **Codex**: `token_count` イベントの累積値（最大値）を使用します。注意点が2つ。(1) ログの `input_tokens` は `cached_input_tokens` を**含む**ため、二重計上を避けるべく差し引いて「非キャッシュ入力」として記録します。(2) `reasoning_output_tokens` は `output_tokens` の内数で、課金も出力単価に含まれるため、コスト計算では加算しません（参考値としてreasoning列に表示）。OpenAIはキャッシュ書き込み課金がないためcacheW単価は0です。
 
-**GitHub Copilot**（対応予定）: 課金がAI Credits（1クレジット=$0.01）建てでトークン単価が公開されていないため、上記のAPI換算方式が適用できません。対応時は「消費クレジット×$0.01」の実コストベースになる予定で、他ツールのAPI換算コストとは意味が異なる値になります（`estimated` フラグで区別）。
+**GitHub Copilot（VS Code Chat）**: 他の2ツールと違い、**実際の消費クレジットが記録されるため実費で計算します**（`copilotCredits` × $0.01。1クレジット=$0.01）。表示には `(actual, Copilot credits)` と付き、API換算値と区別されます。クレジットが記録されていないセッションのみ、実測トークン×resolvedModelの単価でAPI換算し `estimated` フラグ（表示は `*`）を立てます。つまり**Copilotのcost($)だけは「実際に減ったクレジット」**で、claude/codexの「従量課金だったらいくらか」とは意味が異なる点に注意してください。トークンは `promptTokens` / `completionTokens` の実測値で、キャッシュの内訳は記録されないためcacheR/cacheWは常に0です。
 
 ### 精度に関する注意
 
@@ -218,7 +221,7 @@ cost = ( input × 入力単価
 
 ## ロードマップ
 
-- GitHub Copilot CLIパーサー（`session-state` スキーマ確認後）
+- GitHub Copilot CLIパーサー（`~/.copilot/session-state/`、スキーマ確認後）
 - `aimet serve`: ローカルHTMLダッシュボード
 - MCPサーバー化（3環境共通の対話発動口）
 

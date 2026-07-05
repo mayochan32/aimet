@@ -81,6 +81,45 @@ export async function detailCodex(path: string, raw = false): Promise<Record<str
   };
 }
 
+export async function detailCopilot(path: string, raw = false): Promise<Record<string, unknown>> {
+  const { reduceSession } = await import('./parsers/copilot.js');
+  const s = await reduceSession(path);
+  const requests = ((s.requests as Record<string, unknown>[]) ?? []).map((r) => {
+    const res = (r.result ?? {}) as Record<string, unknown>;
+    const md = (res.metadata ?? {}) as Record<string, unknown>;
+    return {
+      timestamp: r.timestamp,
+      requestId: r.requestId,
+      message: String((r.message as Record<string, unknown>)?.text ?? '').slice(0, 200),
+      modelId: r.modelId,
+      resolvedModel: md.resolvedModel ?? null,
+      promptTokens: r.promptTokens ?? null,
+      completionTokens: r.completionTokens ?? null,
+      outputTokens: md.outputTokens ?? null,
+      copilotCredits: r.copilotCredits ?? null,
+      elapsedMs: r.elapsedMs ?? null,
+      timings: res.timings ?? null,
+      toolCallRounds: Array.isArray(md.toolCallRounds) ? md.toolCallRounds.length : 0,
+      promptTokenDetails: r.promptTokenDetails ?? null,
+      ...(raw ? { rawRequest: r } : {}),
+    };
+  });
+  return {
+    tool: 'copilot',
+    logPath: path,
+    meta: {
+      sessionId: s.sessionId,
+      customTitle: s.customTitle ?? null,
+      creationDate: s.creationDate,
+      initialLocation: s.initialLocation,
+      version: s.version,
+    },
+    models: [...new Set(requests.map((r) => String(r.resolvedModel ?? r.modelId ?? '')))],
+    eventCounts: { requests: requests.length },
+    requests,
+  };
+}
+
 export async function detail(
   tool: string,
   path: string,
@@ -88,5 +127,6 @@ export async function detail(
 ): Promise<Record<string, unknown>> {
   if (tool === 'claude') return detailClaude(path, raw);
   if (tool === 'codex') return detailCodex(path, raw);
+  if (tool === 'copilot') return detailCopilot(path, raw);
   throw new Error(`detail not supported for tool: ${tool}`);
 }

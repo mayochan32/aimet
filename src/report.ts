@@ -79,7 +79,15 @@ export function report(store: Store, opts: ReportOpts = {}): string {
   const widths = header.map((h, i) => Math.max(h.length, ...lines.map((l) => l[i].length)));
   const fmt = (cols: string[]) => cols.map((c, i) => c.padStart(widths[i])).join('  ');
   return [fmt(header), fmt(widths.map((w) => '-'.repeat(w))), ...lines.map(fmt)].join('\n') +
-    '\n\n( * = includes estimated values, cost = API-equivalent USD )';
+    '\n\n( * = includes estimated values | cost: claude/codex = API-equivalent USD, copilot = actual credit spend )';
+}
+
+/** Cost semantics differ per tool: see README "コスト計算の仕組み". */
+export function costLabel(r: Record<string, unknown>): string {
+  if (r.tool === 'copilot') {
+    return num(r.estimated) ? ' (API-equivalent, estimated)' : ' (actual, Copilot credits)';
+  }
+  return ' (API-equivalent)';
 }
 
 /** Latest matching session row, or null. */
@@ -110,6 +118,6 @@ export function sessionSummary(store: Store, opts: { tool?: string; id?: string 
     `time    : ${r.started_at} -> ${r.ended_at} (active ${fmtHours(num(r.active_sec))} / wall ${fmtHours(num(r.duration_sec))})`,
     `turns   : ${r.turns}`,
     `tokens  : in ${fmtTokens(num(r.input_tokens))} / out ${fmtTokens(num(r.output_tokens))} / cacheR ${fmtTokens(num(r.cache_read_tokens))} / cacheW ${fmtTokens(num(r.cache_write_tokens))}`,
-    `cost    : ${r.cost_usd == null ? 'unknown model' : '$' + num(r.cost_usd).toFixed(4) + ' (API-equivalent)'}`,
+    `cost    : ${r.cost_usd == null ? 'unknown model' : '$' + num(r.cost_usd).toFixed(4) + costLabel(r)}`,
   ].join('\n');
 }
