@@ -162,10 +162,9 @@ async function main(): Promise<void> {
             const evt = JSON.parse(raw) as Record<string, unknown>;
             const p = [evt.transcript_path, evt.rollout_path, evt.session_file, evt.log_path]
               .find((v): v is string => typeof v === 'string' && existsSync(v));
-            if (p) {
-              await ingestFile(store, parser, p);
-              handled = true;
-            }
+            // Handled only if the file actually parsed into a session
+            // (VS Code may pass a transcript in a different format).
+            if (p) handled = (await ingestFile(store, parser, p)) != null;
           } catch {
             /* non-JSON stdin: fall through */
           }

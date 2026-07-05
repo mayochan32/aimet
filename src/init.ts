@@ -84,6 +84,50 @@ export function initCodex(dryRun: boolean): string {
   return log.join('\n');
 }
 
+/**
+ * Register a VS Code agent hook (Preview) + /metrics prompt file for
+ * GitHub Copilot Chat. Hook location: ~/.copilot/hooks/*.json (user level),
+ * same event schema as Claude Code. Fires on Stop (session ends).
+ */
+export function initCopilot(dryRun: boolean): string {
+  const log: string[] = [];
+  const hooksPath = join(homedir(), '.copilot', 'hooks', 'aimet.json');
+  const cfg = existsSync(hooksPath) ? readJson(hooksPath) : {};
+  const hooks = (cfg.hooks ??= {}) as Record<string, unknown[]>;
+  const list = (hooks.Stop ??= []) as unknown[];
+  if (!JSON.stringify(list).includes(HOOK_CMD('copilot'))) {
+    list.push({ type: 'command', command: HOOK_CMD('copilot') });
+    writeFile(hooksPath, JSON.stringify(cfg, null, 2) + '\n', dryRun, log);
+    log.push('note: VS Code agent hooks are in Preview. Verify with /hooks in Copilot Chat');
+  } else {
+    log.push(`hook already registered in ${hooksPath}`);
+  }
+
+  // /metrics prompt file into every VS Code user-data dir that exists.
+  const userDirs = [
+    join(homedir(), 'Library', 'Application Support', 'Code', 'User'), // macOS
+    join(homedir(), '.config', 'Code', 'User'), // Linux
+    join(homedir(), 'AppData', 'Roaming', 'Code', 'User'), // Windows
+  ].filter((d) => existsSync(d));
+  const prompt = [
+    '---',
+    'description: Show AI usage metrics for my Copilot sessions',
+    '---',
+    '',
+    'Run the terminal command `aimet collect --tool copilot --since 2` and then',
+    '`aimet session --tool copilot`, and show me the output unchanged.',
+    'If I ask for a weekly view, run `aimet report --period weekly --by tool`.',
+    '',
+  ].join('\n');
+  for (const dir of userDirs) {
+    writeFile(join(dir, 'prompts', 'metrics.prompt.md'), prompt, dryRun, log);
+  }
+  if (userDirs.length === 0) {
+    log.push('note: no VS Code user dir found; /metrics prompt file was not installed');
+  }
+  return log.join('\n');
+}
+
 export function initTool(tool: string, dryRun: boolean): string {
   switch (tool) {
     case 'claude':
@@ -91,7 +135,7 @@ export function initTool(tool: string, dryRun: boolean): string {
     case 'codex':
       return initCodex(dryRun);
     case 'copilot':
-      return 'copilot: not implemented yet (log schema unconfirmed). Planned: hooks in ~/.copilot + custom agent.';
+      return initCopilot(dryRun);
     default:
       return `unknown tool: ${tool} (expected claude | codex | copilot)`;
   }

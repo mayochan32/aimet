@@ -56,17 +56,32 @@ aimet detail --tool claude --md detail.md
 `aimet init <tool>` が各開発環境にフックを組み込みます（`--dry-run` で書き込み内容を事前確認できます）。
 
 ```bash
-aimet init claude   # ~/.claude/settings.json に SessionEnd フックを登録
-aimet init codex    # ~/.codex/hooks.json にフックを登録
+aimet init claude    # ~/.claude/settings.json に SessionEnd フックを登録
+aimet init codex     # ~/.codex/hooks.json にフックを登録
+aimet init copilot   # ~/.copilot/hooks/aimet.json に Stop フックを登録（VS Code）
 ```
 
 以後、セッションが終わるたびに `aimet hook <tool>` が自動で呼ばれ、そのセッションのログを即時パースしてDBへ記録します。フックはstdinのイベントJSON（`transcript_path` 等）からログを特定し、特定できない場合は直近2日分の差分スキャンにフォールバックします。**ホスト環境を絶対に失敗させないよう常に exit 0** で終了します。
 
 > **注意（Codex）**: `hooks.json` のスキーマはバージョンにより変わる可能性があります。組み込み後にTUIの `/hooks` で有効になっているか確認してください。
 
+> **注意（Copilot / VS Code）**: VS CodeのAgent hooksは**プレビュー機能**です（フック形式はClaude Code互換で、ユーザーレベルの置き場所が `~/.copilot/hooks/*.json`）。組み込み後、Copilot Chatで `/hooks` と打つか、出力パネルの「GitHub Copilot Chat Hooks」チャンネルで発火を確認してください。フックが使えない環境では、定期実行で代替できます：
+> ```bash
+> # cronで1時間ごとに差分取り込み（フック不要の代替手段）
+> 0 * * * * aimet collect --since 2
+> ```
+
 ### 3. 対話発動 — エージェントに聞く
 
-`aimet init` は各環境に `/metrics` コマンドも配置します（Claude Code: `~/.claude/commands/metrics.md`、Codex: `~/.codex/prompts/metrics.md`）。開発中に `/metrics` と打つと、エージェントが `aimet session` を実行して現在の使用状況を答えます。
+`aimet init` は各環境に `/metrics` コマンドも配置します。開発中に `/metrics` と打つと、エージェントが `aimet session` を実行して現在の使用状況を答えます。
+
+| 環境 | 配置先 | 呼び出し方 |
+|---|---|---|
+| Claude Code | `~/.claude/commands/metrics.md` | `/metrics` |
+| Codex CLI | `~/.codex/prompts/metrics.md` | `/metrics` |
+| Copilot (VS Code) | `<userData>/User/prompts/metrics.prompt.md` | チャットで `/metrics`（プロンプトファイル） |
+
+Copilotの場合、エージェントモードでターミナルコマンドの実行許可を求められたら承認してください（`aimet collect` と `aimet session` を実行します）。
 
 ## 3種類のレポートの見方
 
