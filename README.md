@@ -36,6 +36,7 @@ aimet collect                       # 全ログを走査して取り込み（冪
 aimet collect --since 7             # 直近7日に更新されたログのみ
 aimet report                        # 日次サマリー（テキスト表）
 aimet report --period weekly --by project
+aimet report --tool claude          # 特定ツールに絞り込み
 aimet report --by model --json      # JSON出力（BI・スプレッドシート連携用）
 aimet session --tool claude         # 直近セッションのサマリ
 aimet detail --tool codex           # 直近セッションの全記録をJSONダンプ

@@ -3,6 +3,7 @@ import type { Store } from './store.js';
 export interface ReportOpts {
   period?: 'daily' | 'weekly' | 'monthly';
   by?: 'tool' | 'project' | 'model';
+  tool?: string;
   sinceDays?: number;
   json?: boolean;
 }
@@ -32,9 +33,16 @@ export function reportRows(store: Store, opts: ReportOpts = {}): Record<string, 
         ? `substr(${local}, 1, 7)`
         : `strftime('%Y-W%W', ${local})`;
   const group = opts.by ? `, ${opts.by}` : '';
-  const where = opts.sinceDays
-    ? `WHERE started_at >= datetime('now', '-${Math.floor(opts.sinceDays)} days')`
-    : '';
+  const conds: string[] = [];
+  const params: unknown[] = [];
+  if (opts.sinceDays) {
+    conds.push(`started_at >= datetime('now', '-${Math.floor(opts.sinceDays)} days')`);
+  }
+  if (opts.tool) {
+    conds.push('tool = ?');
+    params.push(opts.tool);
+  }
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
 
   return store.query(
     `SELECT ${bucket} AS period${group},
@@ -52,7 +60,8 @@ export function reportRows(store: Store, opts: ReportOpts = {}): Record<string, 
        MAX(estimated) AS estimated
      FROM sessions ${where}
      GROUP BY period${group}
-     ORDER BY period DESC${group ? `, ${opts.by}` : ''}`
+     ORDER BY period DESC${group ? `, ${opts.by}` : ''}`,
+    ...params
   );
 }
 

@@ -15,7 +15,7 @@ const USAGE = `aimet - AI Metrics for Claude Code / Codex / GitHub Copilot
 Usage:
   aimet collect [--tool claude|codex] [--since <days>] [--dir <path>]
   aimet report  [--period daily|weekly|monthly] [--by tool|project|model]
-              [--since <days>] [--json] [--md <file>]
+              [--tool <tool>] [--since <days>] [--json] [--md <file>]
   aimet session [--tool <tool>] [--id <prefix>] [--md <file>]
   aimet detail  [--tool <tool>] [--id <prefix>] [--file <log.jsonl>]
               [--raw] [--md <file>]
@@ -78,6 +78,7 @@ async function main(): Promise<void> {
       const opts = {
         period: values.period as never,
         by: values.by as never,
+        tool: values.tool,
         sinceDays: values.since ? Number(values.since) : undefined,
         json: values.json,
       };
