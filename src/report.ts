@@ -88,7 +88,8 @@ export function report(store: Store, opts: ReportOpts = {}): string {
   const widths = header.map((h, i) => Math.max(h.length, ...lines.map((l) => l[i].length)));
   const fmt = (cols: string[]) => cols.map((c, i) => c.padStart(widths[i])).join('  ');
   return [fmt(header), fmt(widths.map((w) => '-'.repeat(w))), ...lines.map(fmt)].join('\n') +
-    '\n\n( * = includes estimated values | cost: claude/codex = API-equivalent USD, copilot = actual credit spend )';
+    '\n\n( * = includes estimated values | cost: claude/codex = API-equivalent USD, copilot = actual credit spend )' +
+    '\nコストは参考値。実際の実行環境に合わせて計算してください。';
 }
 
 /** Cost semantics differ per tool: see README "コスト計算の仕組み". */
@@ -128,5 +129,7 @@ export function sessionSummary(store: Store, opts: { tool?: string; id?: string 
     `turns   : ${r.turns}`,
     `tokens  : in ${fmtTokens(num(r.input_tokens))} / out ${fmtTokens(num(r.output_tokens))} / cacheR ${fmtTokens(num(r.cache_read_tokens))} / cacheW ${fmtTokens(num(r.cache_write_tokens))}`,
     `cost    : ${r.cost_usd == null ? 'unknown model' : '$' + num(r.cost_usd).toFixed(4) + costLabel(r)}`,
+    '',
+    'コストは参考値。実際の実行環境に合わせて計算してください。',
   ].join('\n');
 }
