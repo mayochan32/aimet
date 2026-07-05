@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import type { SessionMetrics } from './types.js';
 
 export function defaultDbPath(): string {
-  return process.env.AIM_DB ?? join(homedir(), '.aim', 'metrics.db');
+  return process.env.AIMET_DB ?? join(homedir(), '.aimet', 'metrics.db');
 }
 
 export class Store {

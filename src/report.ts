@@ -59,7 +59,7 @@ export function reportRows(store: Store, opts: ReportOpts = {}): Record<string, 
 export function report(store: Store, opts: ReportOpts = {}): string {
   const rows = reportRows(store, opts);
   if (opts.json) return JSON.stringify(rows, null, 2);
-  if (rows.length === 0) return 'No data. Run `aim collect` first.';
+  if (rows.length === 0) return 'No data. Run `aimet collect` first.';
 
   const header = ['period', ...(opts.by ? [opts.by] : []), 'sess', 'turns', 'active', 'wall', 'in', 'out', 'cacheR', 'cacheW', 'cost($)'];
   const lines = rows.map((r) => [
@@ -99,7 +99,7 @@ export function sessionRow(
   return rows[0] ?? null;
 }
 
-/** Human summary for one session (used by `aim session` / skills). */
+/** Human summary for one session (used by `aimet session` / skills). */
 export function sessionSummary(store: Store, opts: { tool?: string; id?: string }): string {
   const r = sessionRow(store, opts);
   if (!r) return 'Session not found.';

@@ -1,11 +1,11 @@
-# aim — AI Metrics
+# aimet — AI Metrics
 
-**Claude Code / Codex / GitHub Copilot のローカルセッションログから、AIエージェント開発にかかった時間・トークン数・API換算コストを採取する個人向けメトリクスツール。**
+**Claude Code / Codex / GitHub Copilot のローカルセッションログから、AIエージェント開発にかかった時間・トークン数・API換算コストを採取するメトリクスツール。**
 
 チームの管理API（組織機能）を使わず、各ツールが手元に残すセッションログ（JSONL）だけを情報源にします。採取したデータはプロジェクトマネジメントの数値データ（工数見積もり、案件別コスト配賦、モデル選定の判断材料など）として利用できます。
 
 - 依存パッケージゼロ（Node.js 22.5+ の `node:sqlite` を使用）
-- データは `~/.aim/metrics.db` （SQLite）に蓄積
+- データは `~/.aimet/metrics.db` （SQLite）に蓄積
 - 冪等設計：何度実行しても二重計上しない
 
 ## 対応状況
@@ -19,9 +19,9 @@
 ## インストール
 
 ```bash
-git clone <this-repo> && cd aim
+git clone <this-repo> && cd aimet
 npm install && npm run build
-npm link        # `aim` コマンドをグローバルに登録
+npm link        # `aimet` コマンドをグローバルに登録
 ```
 
 ## 機能と使い方
@@ -29,45 +29,45 @@ npm link        # `aim` コマンドをグローバルに登録
 ### 1. 手動発動 — いつでも取り込み・集計
 
 ```bash
-aim collect                       # 全ログを走査して取り込み（冪等・再実行安全）
-aim collect --since 7             # 直近7日に更新されたログのみ
-aim report                        # 日次サマリー（テキスト表）
-aim report --period weekly --by project
-aim report --by model --json      # JSON出力（BI・スプレッドシート連携用）
-aim session --tool claude         # 直近セッションのサマリ
-aim detail --tool codex           # 直近セッションの全記録をJSONダンプ
-aim detail --tool codex --raw     # 除外なし完全ダンプ（システムプロンプト全文等も）
-aim detail --file <log.jsonl>     # DB未登録のログを直接ダンプ
+aimet collect                       # 全ログを走査して取り込み（冪等・再実行安全）
+aimet collect --since 7             # 直近7日に更新されたログのみ
+aimet report                        # 日次サマリー（テキスト表）
+aimet report --period weekly --by project
+aimet report --by model --json      # JSON出力（BI・スプレッドシート連携用）
+aimet session --tool claude         # 直近セッションのサマリ
+aimet detail --tool codex           # 直近セッションの全記録をJSONダンプ
+aimet detail --tool codex --raw     # 除外なし完全ダンプ（システムプロンプト全文等も）
+aimet detail --file <log.jsonl>     # DB未登録のログを直接ダンプ
 ```
 
 すべての出力レベルは `--md <ファイル>` でMarkdownファイルに整形出力できます。
 
 ```bash
-aim report --by tool --md report.md
-aim session --tool codex --md session.md
-aim detail --tool claude --md detail.md
+aimet report --by tool --md report.md
+aimet session --tool codex --md session.md
+aimet detail --tool claude --md detail.md
 ```
 
 ### 2. 自動発動 — セッション終了時に自動記録
 
-`aim init <tool>` が各開発環境にフックを組み込みます（`--dry-run` で書き込み内容を事前確認できます）。
+`aimet init <tool>` が各開発環境にフックを組み込みます（`--dry-run` で書き込み内容を事前確認できます）。
 
 ```bash
-aim init claude   # ~/.claude/settings.json に SessionEnd フックを登録
-aim init codex    # ~/.codex/hooks.json にフックを登録
+aimet init claude   # ~/.claude/settings.json に SessionEnd フックを登録
+aimet init codex    # ~/.codex/hooks.json にフックを登録
 ```
 
-以後、セッションが終わるたびに `aim hook <tool>` が自動で呼ばれ、そのセッションのログを即時パースしてDBへ記録します。フックはstdinのイベントJSON（`transcript_path` 等）からログを特定し、特定できない場合は直近2日分の差分スキャンにフォールバックします。**ホスト環境を絶対に失敗させないよう常に exit 0** で終了します。
+以後、セッションが終わるたびに `aimet hook <tool>` が自動で呼ばれ、そのセッションのログを即時パースしてDBへ記録します。フックはstdinのイベントJSON（`transcript_path` 等）からログを特定し、特定できない場合は直近2日分の差分スキャンにフォールバックします。**ホスト環境を絶対に失敗させないよう常に exit 0** で終了します。
 
 > **注意（Codex）**: `hooks.json` のスキーマはバージョンにより変わる可能性があります。組み込み後にTUIの `/hooks` で有効になっているか確認してください。
 
 ### 3. 対話発動 — エージェントに聞く
 
-`aim init` は各環境に `/metrics` コマンドも配置します（Claude Code: `~/.claude/commands/metrics.md`、Codex: `~/.codex/prompts/metrics.md`）。開発中に `/metrics` と打つと、エージェントが `aim session` を実行して現在の使用状況を答えます。
+`aimet init` は各環境に `/metrics` コマンドも配置します（Claude Code: `~/.claude/commands/metrics.md`、Codex: `~/.codex/prompts/metrics.md`）。開発中に `/metrics` と打つと、エージェントが `aimet session` を実行して現在の使用状況を答えます。
 
 ## 3種類のレポートの見方
 
-### レベル1: `aim report` — 期間集計（PM向けサマリ)
+### レベル1: `aimet report` — 期間集計（PM向けサマリ)
 
 ```
 | period     | start                     | end                       | tool   | sessions | turns | active | wall   | input | output | cacheR | cacheW | cost($) |
@@ -92,7 +92,7 @@ aim init codex    # ~/.codex/hooks.json にフックを登録
 
 オプション: `--period daily|weekly|monthly`、`--by tool|project|model`（横断比較）、`--since <日数>`。
 
-### レベル2: `aim session` — 1セッションのサマリ
+### レベル2: `aimet session` — 1セッションのサマリ
 
 直近（または `--id <プレフィックス>` で指定した）セッション1件の詳細サマリ。項目はレベル1と同じ意味に加えて:
 
@@ -103,7 +103,7 @@ aim init codex    # ~/.codex/hooks.json にフックを登録
 | reasoning | 推論トークン（Codexのみ。outputの内数） |
 | log file | 元ログファイルのパス（detailで深掘りする際の入口） |
 
-### レベル3: `aim detail` — ログの全記録
+### レベル3: `aimet detail` — ログの全記録
 
 集計せず、JSONLに記録されている情報を（ほぼ）すべて出します。構成はツールごとに異なります。
 
@@ -177,7 +177,7 @@ cost = ( input × 入力単価
 
 単価は1Mトークンあたり米ドル。モデル名の**プレフィックス最長一致**で単価表（`src/pricing.ts` 内蔵）から引きます。例：ログのモデルが `gpt-5.5` で単価表に `gpt-5.5` がなければ `gpt-5` の単価が使われます。一致するものがない場合、コストは `-`（null）となり**0円として集計されることはありません**。
 
-単価は変動するため、`~/.aim/pricing.json` で上書き・追加できます：
+単価は変動するため、`~/.aimet/pricing.json` で上書き・追加できます：
 
 ```json
 { "gpt-5.5": [1.75, 14.0, 0.175, 0] }
@@ -195,14 +195,14 @@ cost = ( input × 入力単価
 
 ### 精度に関する注意
 
-- 単価表が古いとコストがずれます。重要な集計の前に[Anthropic](https://platform.claude.com/docs/en/about-claude/pricing)・[OpenAI](https://openai.com/api/pricing/)の最新単価と `src/pricing.ts` を照合し、必要なら `~/.aim/pricing.json` で上書きしてください
+- 単価表が古いとコストがずれます。重要な集計の前に[Anthropic](https://platform.claude.com/docs/en/about-claude/pricing)・[OpenAI](https://openai.com/api/pricing/)の最新単価と `src/pricing.ts` を照合し、必要なら `~/.aimet/pricing.json` で上書きしてください
 - バッチ割引、優先スループット課金、サーバーツール（Web検索等）の従量課金は含みません
-- Codexの累積トークンはセッション途中のコンテキスト圧縮（compaction）後も引き継がれる前提です。異常に大きい値が出た場合は `aim detail` の `tokenTimeline` で推移を確認してください
+- Codexの累積トークンはセッション途中のコンテキスト圧縮（compaction）後も引き継がれる前提です。異常に大きい値が出た場合は `aimet detail` の `tokenTimeline` で推移を確認してください
 
 ## 設定
 
-- **DBの場所**: `~/.aim/metrics.db`（環境変数 `AIM_DB` で変更可）
-- **単価表**: `src/pricing.ts` にモデル名プレフィックスマッチで内蔵。`~/.aim/pricing.json` で上書き・追加できます。形式は `{"モデル名プレフィックス": [input, output, cacheRead, cacheWrite]}`（1MトークンあたりUSD）。
+- **DBの場所**: `~/.aimet/metrics.db`（環境変数 `AIMET_DB` で変更可）
+- **単価表**: `src/pricing.ts` にモデル名プレフィックスマッチで内蔵。`~/.aimet/pricing.json` で上書き・追加できます。形式は `{"モデル名プレフィックス": [input, output, cacheRead, cacheWrite]}`（1MトークンあたりUSD）。
 
 ```json
 { "gpt-5.5": [1.75, 14.0, 0.175, 0] }
@@ -219,7 +219,7 @@ cost = ( input × 入力単価
 ## ロードマップ
 
 - GitHub Copilot CLIパーサー（`session-state` スキーマ確認後）
-- `aim serve`: ローカルHTMLダッシュボード
+- `aimet serve`: ローカルHTMLダッシュボード
 - MCPサーバー化（3環境共通の対話発動口）
 
 ## License

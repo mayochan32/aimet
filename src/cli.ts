@@ -10,23 +10,23 @@ import { parserFor } from './parsers/index.js';
 import { initTool } from './init.js';
 import { detail } from './detail.js';
 
-const USAGE = `aim - AI Metrics for Claude Code / Codex / GitHub Copilot
+const USAGE = `aimet - AI Metrics for Claude Code / Codex / GitHub Copilot
 
 Usage:
-  aim collect [--tool claude|codex] [--since <days>] [--dir <path>]
-  aim report  [--period daily|weekly|monthly] [--by tool|project|model]
+  aimet collect [--tool claude|codex] [--since <days>] [--dir <path>]
+  aimet report  [--period daily|weekly|monthly] [--by tool|project|model]
               [--since <days>] [--json] [--md <file>]
-  aim session [--tool <tool>] [--id <prefix>] [--md <file>]
-  aim detail  [--tool <tool>] [--id <prefix>] [--file <log.jsonl>]
+  aimet session [--tool <tool>] [--id <prefix>] [--md <file>]
+  aimet detail  [--tool <tool>] [--id <prefix>] [--file <log.jsonl>]
               [--raw] [--md <file>]
               (full JSON dump of everything the session log records;
                --raw also includes base_instructions / dynamic_tools /
                original records; --md writes a readable Markdown file)
-  aim hook <tool>              (called by editor hooks; reads JSON on stdin)
-  aim init <tool> [--dry-run]  (install hooks & commands into the tool)
+  aimet hook <tool>              (called by editor hooks; reads JSON on stdin)
+  aimet init <tool> [--dry-run]  (install hooks & commands into the tool)
 
-Data: ~/.aim/metrics.db (override with AIM_DB)
-Pricing overrides: ~/.aim/pricing.json`;
+Data: ~/.aimet/metrics.db (override with AIMET_DB)
+Pricing overrides: ~/.aimet/pricing.json`;
 
 async function readStdin(): Promise<string> {
   if (process.stdin.isTTY) return '';
@@ -126,14 +126,14 @@ async function main(): Promise<void> {
         );
         store.close();
         if (rows.length === 0) {
-          console.error('aim detail: session not found (run `aim collect` first)');
+          console.error('aimet detail: session not found (run `aimet collect` first)');
           process.exit(1);
         }
         tool = String(rows[0].tool);
         file = String(rows[0].log_path);
       }
       if (!existsSync(file)) {
-        console.error(`aim detail: log file no longer exists: ${file}`);
+        console.error(`aimet detail: log file no longer exists: ${file}`);
         process.exit(1);
       }
       const d = await detail(tool, file, Boolean(values.raw));
@@ -150,7 +150,7 @@ async function main(): Promise<void> {
       const tool = positional[0] ?? values.tool ?? '';
       const parser = parserFor(tool);
       if (!parser) {
-        console.error(`aim hook: unknown tool "${tool}"`);
+        console.error(`aimet hook: unknown tool "${tool}"`);
         process.exit(0); // never fail the host editor
       }
       const store = new Store();
@@ -190,6 +190,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error(`aim: ${err}`);
+  console.error(`aimet: ${err}`);
   process.exit(1);
 });

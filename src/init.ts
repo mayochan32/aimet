@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 
-const HOOK_CMD = (tool: string) => `aim hook ${tool}`;
+const HOOK_CMD = (tool: string) => `aimet hook ${tool}`;
 
 function readJson(path: string): Record<string, unknown> {
   try {
@@ -39,12 +39,12 @@ export function initClaude(dryRun: boolean): string {
     [
       '---',
       'description: Show AI usage metrics for the current session',
-      'allowed-tools: Bash(aim:*)',
+      'allowed-tools: Bash(aimet:*)',
       '---',
       '',
-      'Run `aim hook claude` first (pass the current session transcript if known),',
-      'then run `aim session --tool claude` and show the result to the user as-is.',
-      'For period summaries the user can ask for, use `aim report --by project --since 7`.',
+      'Run `aimet hook claude` first (pass the current session transcript if known),',
+      'then run `aimet session --tool claude` and show the result to the user as-is.',
+      'For period summaries the user can ask for, use `aimet report --by project --since 7`.',
       '',
     ].join('\n'),
     dryRun,
@@ -60,7 +60,7 @@ export function initCodex(dryRun: boolean): string {
   const cfg = existsSync(hooksPath) ? readJson(hooksPath) : {};
   const hooks = (cfg.hooks ??= {}) as Record<string, unknown[]>;
   const list = (hooks.SessionEnd ??= []) as unknown[];
-  if (!JSON.stringify(list).includes('aim hook codex')) {
+  if (!JSON.stringify(list).includes('aimet hook codex')) {
     list.push({ type: 'command', command: HOOK_CMD('codex') });
     writeFile(hooksPath, JSON.stringify(cfg, null, 2) + '\n', dryRun, log);
     log.push('note: verify the hook fires with `codex` -> /hooks (schema may vary by version)');
@@ -73,9 +73,9 @@ export function initCodex(dryRun: boolean): string {
     [
       'Show my AI usage metrics.',
       '',
-      'Run the shell command `aim hook codex` and then `aim session --tool codex`,',
+      'Run the shell command `aimet hook codex` and then `aimet session --tool codex`,',
       'and present the output to me unchanged. If I ask for a weekly view,',
-      'run `aim report --period weekly --by project`.',
+      'run `aimet report --period weekly --by project`.',
       '',
     ].join('\n'),
     dryRun,

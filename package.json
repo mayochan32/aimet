@@ -1,9 +1,9 @@
 {
-  "name": "@mayo32/aim",
+  "name": "@mayo32/aimet",
   "version": "0.1.0",
   "description": "AI Metrics - collect time & token metrics from Claude Code / Codex / GitHub Copilot session logs",
   "type": "module",
-  "bin": { "aim": "dist/cli.js" },
+  "bin": { "aimet": "dist/cli.js" },
   "files": ["dist", "integrations", "README.md"],
   "engines": { "node": ">=22.5" },
   "scripts": {

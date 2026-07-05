@@ -5,7 +5,7 @@ import type { TokenUsage } from './types.js';
 
 /**
  * USD per 1M tokens: [input, output, cacheRead, cacheWrite].
- * Overridable via ~/.aim/pricing.json (same shape, merged over defaults).
+ * Overridable via ~/.aimet/pricing.json (same shape, merged over defaults).
  * Matching is by prefix, longest prefix wins.
  */
 const DEFAULT_PRICING: Record<string, [number, number, number, number]> = {
@@ -30,7 +30,7 @@ let cached: Record<string, [number, number, number, number]> | null = null;
 export function pricingTable(): Record<string, [number, number, number, number]> {
   if (cached) return cached;
   cached = { ...DEFAULT_PRICING };
-  const userFile = join(homedir(), '.aim', 'pricing.json');
+  const userFile = join(homedir(), '.aimet', 'pricing.json');
   if (existsSync(userFile)) {
     try {
       Object.assign(cached, JSON.parse(readFileSync(userFile, 'utf8')));

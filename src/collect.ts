@@ -52,7 +52,7 @@ export async function collect(opts: {
           res[opts.store.upsert(m) as 'inserted' | 'updated' | 'skipped']++;
         } catch (err) {
           res.errors++;
-          if (!opts.quiet) console.error(`aim: failed to parse ${file}: ${err}`);
+          if (!opts.quiet) console.error(`aimet: failed to parse ${file}: ${err}`);
         }
       }
     }
