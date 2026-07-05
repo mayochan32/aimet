@@ -71,19 +71,23 @@ export const codexParser: Parser = {
     // Filename fallback: rollout-2026-07-04T17-10-43-<uuid>.jsonl
     const idFromName = basename(path, '.jsonl').split('-').slice(7).join('-');
 
+    // When the log carries no model name we fall back to gpt-5-codex pricing.
+    // Tokens are still measured, but the unit price is a guess -> mark estimated.
+    const modelKnown = model !== '';
+    const resolvedModel = model || 'gpt-5-codex';
     return {
       tool: 'codex',
       sessionId: sessionId || idFromName || basename(path, '.jsonl'),
       logPath: path,
       project: cwd || 'unknown',
-      model: model || 'gpt-5-codex',
+      model: resolvedModel,
       startedAt: first,
       endedAt: last,
       durationSec: durationSeconds(first, last),
       activeSec: activeSeconds(timestamps),
       tokens,
-      costUsd: costUsd(model || 'gpt-5-codex', tokens),
-      estimated: false,
+      costUsd: costUsd(resolvedModel, tokens),
+      estimated: !modelKnown,
       turns,
       lastEventAt: last,
     };

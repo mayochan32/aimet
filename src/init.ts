@@ -1,22 +1,43 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, copyFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 
 const HOOK_CMD = (tool: string) => `aimet hook ${tool}`;
 
+/**
+ * Parse an existing config file. Throws (rather than returning {}) when the
+ * file exists but is not valid JSON, so we never silently overwrite and lose
+ * a user's real settings. Callers only invoke this when the file exists.
+ */
 function readJson(path: string): Record<string, unknown> {
+  const text = readFileSync(path, 'utf8');
   try {
-    return JSON.parse(readFileSync(path, 'utf8'));
-  } catch {
-    return {};
+    const parsed = JSON.parse(text);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('not a JSON object');
+    }
+    return parsed as Record<string, unknown>;
+  } catch (e) {
+    throw new Error(
+      `refusing to modify ${path}: it is not valid JSON (${(e as Error).message}). ` +
+        `Fix or move the file, then re-run. Your settings were left untouched.`
+    );
   }
 }
 
+/** Back up the existing file and write atomically (temp file + rename). */
 function writeFile(path: string, content: string, dryRun: boolean, log: string[]): void {
   log.push(`${dryRun ? '[dry-run] would write' : 'wrote'} ${path}`);
   if (dryRun) return;
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, content);
+  if (existsSync(path)) {
+    const bak = `${path}.bak`;
+    copyFileSync(path, bak);
+    log.push(`backed up previous file to ${bak}`);
+  }
+  const tmp = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmp, content);
+  renameSync(tmp, path); // atomic on the same filesystem
 }
 
 /** Register the SessionEnd hook + /metrics command for Claude Code. */

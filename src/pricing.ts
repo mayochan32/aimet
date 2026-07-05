@@ -27,15 +27,36 @@ const DEFAULT_PRICING: Record<string, [number, number, number, number]> = {
 
 let cached: Record<string, [number, number, number, number]> | null = null;
 
+const BLOCKED_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
+/** A valid entry is [input, output, cacheRead, cacheWrite] of 4 finite, non-negative numbers. */
+function isValidRate(v: unknown): v is [number, number, number, number] {
+  return (
+    Array.isArray(v) &&
+    v.length === 4 &&
+    v.every((n) => typeof n === 'number' && Number.isFinite(n) && n >= 0)
+  );
+}
+
 export function pricingTable(): Record<string, [number, number, number, number]> {
   if (cached) return cached;
   cached = { ...DEFAULT_PRICING };
   const userFile = join(homedir(), '.aimet', 'pricing.json');
   if (existsSync(userFile)) {
     try {
-      Object.assign(cached, JSON.parse(readFileSync(userFile, 'utf8')));
-    } catch {
-      /* ignore malformed user pricing */
+      const user = JSON.parse(readFileSync(userFile, 'utf8')) as Record<string, unknown>;
+      if (user === null || typeof user !== 'object' || Array.isArray(user)) {
+        throw new Error('pricing.json must be a JSON object');
+      }
+      // Only accept well-formed entries; skip (and warn about) anything invalid
+      // rather than letting a typo produce NaN costs.
+      for (const [model, rate] of Object.entries(user)) {
+        if (BLOCKED_KEYS.has(model)) continue;
+        if (isValidRate(rate)) cached[model] = rate;
+        else console.error(`aimet: ignoring invalid pricing for "${model}" in ${userFile}`);
+      }
+    } catch (e) {
+      console.error(`aimet: ignoring malformed ${userFile} (${(e as Error).message})`);
     }
   }
   return cached;

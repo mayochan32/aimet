@@ -39,15 +39,16 @@ export const claudeParser: Parser = {
       if (rec.type !== 'assistant') continue;
       const msg = rec.message as Record<string, unknown> | undefined;
       if (!msg) continue;
-      turns++;
       if (typeof msg.model === 'string') model = msg.model;
 
       // Dedupe retried/streamed duplicates of the same API message.
+      // Count the turn only AFTER dedup so retries don't inflate the turn count.
       const id = (msg.id as string) ?? (rec.uuid as string) ?? '';
       if (id) {
         if (seenMsgIds.has(id)) continue;
         seenMsgIds.add(id);
       }
+      turns++;
       const u = msg.usage as Record<string, number> | undefined;
       if (!u) continue;
       tokens.input += u.input_tokens ?? 0;

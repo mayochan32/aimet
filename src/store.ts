@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, existsSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import type { SessionMetrics } from './types.js';
@@ -12,8 +12,24 @@ export class Store {
   private db: DatabaseSync;
 
   constructor(path: string = defaultDbPath()) {
-    mkdirSync(dirname(path), { recursive: true });
+    // The DB records project paths, timestamps, models and token counts.
+    // Keep it private to the current user (dir 0700, file 0600).
+    const dir = dirname(path);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try {
+      chmodSync(dir, 0o700);
+    } catch {
+      /* best effort (e.g. non-POSIX filesystems) */
+    }
+    const existedBefore = existsSync(path);
     this.db = new DatabaseSync(path);
+    if (!existedBefore) {
+      try {
+        chmodSync(path, 0o600);
+      } catch {
+        /* best effort */
+      }
+    }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         tool TEXT NOT NULL,

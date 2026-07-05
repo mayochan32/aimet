@@ -137,6 +137,13 @@ async function main(): Promise<void> {
         console.error(`aimet detail: log file no longer exists: ${file}`);
         process.exit(1);
       }
+      if (values.raw) {
+        console.error(
+          'aimet detail --raw: output may include system prompts, tool definitions, ' +
+            'file paths and conversation fragments. Do NOT paste it into issues, chat, ' +
+            'or external AI services.'
+        );
+      }
       const d = await detail(tool, file, Boolean(values.raw));
       if (values.md) {
         writeFileSync(values.md, detailMd(d));

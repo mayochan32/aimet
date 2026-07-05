@@ -10,6 +10,11 @@ export interface ReportOpts {
 
 const num = (v: unknown) => Number(v ?? 0);
 
+// Whitelists for values that get interpolated into SQL (never parameterized
+// as column names). Reject anything outside the known set.
+const GROUP_COLUMNS = new Set(['tool', 'project', 'model']);
+const PERIODS = new Set(['daily', 'weekly', 'monthly']);
+
 export function fmtTokens(n: number): string {
   if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
   if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
@@ -23,7 +28,13 @@ export function fmtHours(sec: number): string {
 
 /** Aggregated rows for a report (shared by text/JSON/Markdown renderers). */
 export function reportRows(store: Store, opts: ReportOpts = {}): Record<string, unknown>[] {
+  if (opts.by && !GROUP_COLUMNS.has(opts.by)) {
+    throw new Error(`invalid --by value: ${opts.by} (expected tool | project | model)`);
+  }
   const period = opts.period ?? 'daily';
+  if (!PERIODS.has(period)) {
+    throw new Error(`invalid --period value: ${period} (expected daily | weekly | monthly)`);
+  }
   // Bucket by LOCAL date (the machine's timezone), not UTC.
   const local = "datetime(started_at, 'localtime')";
   const bucket =

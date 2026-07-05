@@ -18,14 +18,25 @@ import { jsonlRecords } from './util.js';
  * API-equivalent estimate (estimated=true) when no credits are recorded.
  */
 
+const BLOCKED_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
+/** Reject keys that could pollute the prototype chain or aren't plain path segments. */
+function isSafeKey(key: unknown): key is string | number {
+  return (
+    (typeof key === 'string' && key.length > 0 && !BLOCKED_KEYS.has(key)) ||
+    (typeof key === 'number' && Number.isInteger(key) && key >= 0)
+  );
+}
+
 function setPath(obj: Record<string, unknown>, path: unknown[], value: unknown): void {
+  if (path.length === 0 || !path.every(isSafeKey)) return; // ignore empty/unsafe paths
   let cur: Record<string, unknown> | unknown[] = obj;
   for (let i = 0; i < path.length - 1; i++) {
     const key = path[i] as string | number;
     const next = (cur as Record<string, unknown>)[key as string];
     if (typeof next !== 'object' || next === null) {
       (cur as Record<string, unknown>)[key as string] =
-        typeof path[i + 1] === 'number' ? [] : {};
+        typeof path[i + 1] === 'number' ? [] : Object.create(null);
     }
     cur = (cur as Record<string, unknown>)[key as string] as Record<string, unknown>;
   }
