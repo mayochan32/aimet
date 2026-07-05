@@ -1,0 +1,1 @@
+{"type":"assistant","timestamp":"2026-06-01T00:00:01.000Z","sessionId":"sess-claude-unk","cwd":"/proj/claude","message":{"model":"totally-unknown-model-xyz","id":"msg_U","role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":5,"output_tokens":7,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}

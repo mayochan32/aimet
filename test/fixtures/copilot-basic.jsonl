@@ -1,0 +1,8 @@
+{"kind":0,"v":{"sessionId":"sess-cop-1","creationDate":1783000000000,"requests":[]}}
+{"kind":1,"k":["requests",0,"timestamp"],"v":1783000001000}
+{"kind":1,"k":["requests",0,"promptTokens"],"v":1000}
+{"kind":1,"k":["requests",0,"completionTokens"],"v":200}
+{"kind":1,"k":["requests",0,"copilotCredits"],"v":5}
+{"kind":1,"k":["requests",0,"elapsedMs"],"v":12000}
+{"kind":1,"k":["requests",0,"modelId"],"v":"gpt-5.2-codex"}
+{"kind":2,"k":["requests",0,"result","metadata","resolvedModel"],"v":"gpt-5.2-codex"}

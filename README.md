@@ -22,10 +22,40 @@
 ## インストール
 
 ```bash
-git clone <this-repo> && cd aimet
+git clone https://github.com/mayochan32/aimet.git && cd aimet
 npm install && npm run build
 npm link        # `aimet` コマンドをグローバルに登録
 ```
+
+### 開発・テスト
+
+テストは追加依存なしのNode標準ランナー（`node:test`）で書かれています。`npm test` はビルド後に `test/` 配下のfixtureベーステストを実行します（CIはGitHub Actionsで Node 22 / 24 上で走ります）。
+
+```bash
+npm test
+```
+
+テスト内容は3ファイルに分かれています。
+
+**`test/parsers.test.js` — 各ツールパーサの正しさ**
+
+- **Claude**: assistantレコードの `usage` を合計し、`in` / `out` / `cacheR` / `cacheW` が期待値になること。リトライ/ストリーミングで**同じmessage IDが重複しても二重計上せず**、ターン数も過大計上しないこと。途中に壊れたJSONL行があっても無視して処理を続けること。
+- **Claude（未知モデル）**: 単価表にないモデルはコストを **`0`ではなく `null`** にすること。
+- **Codex**: `token_count` の累積値から**最大値**を採用し、`input_tokens` から `cached_input_tokens` を差し引いて非キャッシュ入力に分離すること。reasoningトークンも取得すること。
+- **Codex（モデル不明）**: 既定単価にフォールバックしつつ、単価が推定であることを **`estimated: true`** で明示すること。
+- **Copilot**: インクリメンタル差分ログを復元して `requests[]` を組み立て、クレジットが記録されていれば**API換算ではなく実費**（1クレジット=$0.01）でコストを出すこと。
+
+**`test/store.test.js` — 保存と冪等性**
+
+- `upsert` が `inserted → skipped → updated` と正しく遷移し、**同じログを何度取り込んでも行が増えない**こと（`last_event_at` による重複防止）。
+- `collect` を同じログに再実行すると、2回目は**すべてskip**されること。
+
+**`test/security.test.js` — レビュー指摘の再発防止**
+
+- **プロトタイプ汚染**: `__proto__` / `constructor` を含む細工Copilotログを読んでも `Object.prototype` が汚染されないこと。正当なデータは正しく復元されること。
+- **SQLホワイトリスト**: `report` の `--by` / `--period` に想定外の値（例: `tool; DROP TABLE ...`）を渡すと、SQLを組み立てる前に例外で弾くこと。
+- **pricing.json検証**: ユーザー単価表の不正エントリ（型不正・危険キー）は読み飛ばし、正当な上書きだけ採用すること。
+- **設定ファイル保護**: 既存設定が不正なJSONのとき、`init` が**上書きせず例外で停止**し、元ファイルを変更しないこと。
 
 ## 機能と使い方
 

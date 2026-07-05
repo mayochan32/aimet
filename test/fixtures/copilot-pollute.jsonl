@@ -1,0 +1,4 @@
+{"kind":0,"v":{"sessionId":"sess-cop-evil","creationDate":1783000000000,"requests":[{"timestamp":1783000001000,"promptTokens":10,"completionTokens":5,"copilotCredits":1}]}}
+{"kind":1,"k":["__proto__","polluted"],"v":true}
+{"kind":1,"k":["constructor","prototype","x"],"v":1}
+{"kind":1,"k":[],"v":"empty path ignored"}
