@@ -219,6 +219,14 @@ cost = ( input × 入力単価
 - **推定値フラグ**: ログから実測できない値は `estimated` フラグ付きで区別します。
 - **ストリームパース**: ログは1ファイル数MBになるため逐次読みで処理します。未知のフィールド・イベント種別は無視し、ツールのバージョンアップに寛容です。
 
+## 出力サンプル
+
+実際のセッションログから生成した各出力レベルのサンプルを [`examples/`](examples/) に置いています。
+
+- [report.md](examples/report.md) — 期間集計（`aimet report --by tool --md`）
+- [session-claude.md](examples/session-claude.md) / [session-codex.md](examples/session-codex.md) / [session-copilot.md](examples/session-copilot.md) — セッションサマリ
+- [detail-claude.md](examples/detail-claude.md) / [detail-codex.md](examples/detail-codex.md) / [detail-copilot.md](examples/detail-copilot.md) — 全記録の詳細ダンプ
+
 ## ロードマップ
 
 - GitHub Copilot CLIパーサー（`~/.copilot/session-state/`、スキーマ確認後）
