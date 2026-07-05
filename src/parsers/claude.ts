@@ -27,6 +27,8 @@ export const claudeParser: Parser = {
     let model = '';
     let cwd = '';
     let turns = 0;
+    let cw1h = 0; // 1-hour-TTL cache writes (billed 2.0x input, vs 1.25x for 5m)
+    let cw5m = 0;
 
     for await (const rec of jsonlRecords(path)) {
       const ts = rec.timestamp as string | undefined;
@@ -52,6 +54,11 @@ export const claudeParser: Parser = {
       tokens.output += u.output_tokens ?? 0;
       tokens.cacheRead += u.cache_read_input_tokens ?? 0;
       tokens.cacheWrite += u.cache_creation_input_tokens ?? 0;
+      const cc = (u as Record<string, unknown>).cache_creation as
+        | Record<string, number>
+        | undefined;
+      cw1h += cc?.ephemeral_1h_input_tokens ?? 0;
+      cw5m += cc?.ephemeral_5m_input_tokens ?? 0;
     }
 
     if (timestamps.length === 0) return null;
@@ -72,7 +79,17 @@ export const claudeParser: Parser = {
       durationSec: durationSeconds(first, last),
       activeSec: activeSeconds(timestamps),
       tokens,
-      costUsd: model ? costUsd(model, tokens) : null,
+      // Pricing: the cacheWrite rate in the table is the 5m rate (1.25x input).
+      // 1h-TTL writes are billed 2.0x input = 1.6x the 5m rate, so convert
+      // them to "5m-equivalent" tokens for cost purposes when the split is known.
+      costUsd: model
+        ? costUsd(
+            model,
+            cw1h + cw5m > 0
+              ? { ...tokens, cacheWrite: Math.round(cw5m + 1.6 * cw1h) }
+              : tokens
+          )
+        : null,
       estimated: false,
       turns,
       lastEventAt: last,
