@@ -1,0 +1,19 @@
+{
+  "name": "@mayo32/aim",
+  "version": "0.1.0",
+  "description": "AI Metrics - collect time & token metrics from Claude Code / Codex / GitHub Copilot session logs",
+  "type": "module",
+  "bin": { "aim": "dist/cli.js" },
+  "files": ["dist", "integrations", "README.md"],
+  "engines": { "node": ">=22.5" },
+  "scripts": {
+    "build": "tsc",
+    "dev": "node --experimental-strip-types src/cli.ts"
+  },
+  "keywords": ["ai", "metrics", "claude-code", "codex", "copilot", "tokens"],
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  }
+}
