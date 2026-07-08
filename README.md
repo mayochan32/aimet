@@ -450,6 +450,8 @@ cost = ( input × 入力単価
 
 - **冪等性**: `(tool, session_id)` を主キーに、最終イベント時刻が進んだ場合のみ更新。フックの多重発動や `collect` の再実行で二重計上しません。
 - **Codexのトークン**: `token_count` は累積値のため最大値を採用。`input_tokens` は `cached_input_tokens` を含むため、共通スキーマでは差し引いて「非キャッシュ入力」として記録します。
+- **Codexのマルチエージェント（CLI 0.137以降）**: サブエージェントは別のrolloutファイルになり、`session_meta` の `thread_source: "subagent"` で判別します。子の `payload.session_id` には**親のID**が入っているため、キーには `payload.id`（自スレッドID）を使い、親は `parent_session_id` にリンクします（Copilotと同じグループビューが使えます）。トークン台帳はスレッドごとに独立しており二重計上はありません。
+- **Claude Codeのサブエージェント**: Taskツールの子は同じプロジェクトディレクトリに別JSONLとして保存され、通常のセッションとして集計に含まれます（漏れなし）。ただし現状のClaude Codeは子ログに親セッションIDを記録しないため、親子リンクは未対応です（[claude-code#32175](https://github.com/anthropics/claude-code/issues/32175)）。
 - **重複排除**: Claudeのログは同一APIメッセージが複数レコードに分かれることがあるため、messageIdで重複排除して集計します（detailはあるがまま出力）。
 - **推定値フラグ**: ログから実測できない値は `estimated` フラグ付きで区別します。
 - **ストリームパース**: ログは1ファイル数MBになるため逐次読みで処理します。未知のフィールド・イベント種別は無視し、ツールのバージョンアップに寛容です。

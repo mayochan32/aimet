@@ -174,8 +174,11 @@ export function sessionSummary(store: Store, opts: { tool?: string; id?: string 
             `cacheR ${fmtTokens(num(k.cache_read_tokens))} / ` +
             `${k.cost_usd == null ? 'cost n/a' : '$' + num(k.cost_usd).toFixed(4) + (num(k.estimated) ? '*' : '')}`
         ),
-        `subagents total: turns ${kids.turns} / in ${fmtTokens(num(kids.input))} / out ${fmtTokens(num(kids.output))} / cacheR ${fmtTokens(num(kids.cache_read))} / cost +$${num(kids.cost_usd).toFixed(4)} (API-equivalent, estimated)`,
-        `TOTAL(with subagents): cost $${(num(r.cost_usd) + num(kids.cost_usd)).toFixed(4)}`,
+        `subagents total: turns ${kids.turns} / in ${fmtTokens(num(kids.input))} / out ${fmtTokens(num(kids.output))} / cacheR ${fmtTokens(num(kids.cache_read))} / cost +$${num(kids.cost_usd).toFixed(4)} (API-equivalent, estimated)` +
+          (kidRows.some((k) => k.cost_usd == null)
+            ? ` ※${kidRows.filter((k) => k.cost_usd == null).length}件は単価不明(n/a)で合算に含まれず`
+            : ''),
+        `TOTAL(with subagents): cost $${(num(r.cost_usd) + num(kids.cost_usd)).toFixed(4)}${kidRows.some((k) => k.cost_usd == null) ? ' (一部n/a除く)' : ''}`,
       ]
     : [];
   const parentLine = r.parent_session_id ? [`parent  : ${r.parent_session_id}`] : [];

@@ -28,6 +28,8 @@ export const codexParser: Parser = {
     let cwd = '';
     let turns = 0;
     let best: Record<string, number> | null = null; // largest cumulative usage
+    let parentSessionId: string | null = null;
+    let subagentLabel = '';
 
     for await (const rec of jsonlRecords(path)) {
       const ts = rec.timestamp as string | undefined;
@@ -36,7 +38,22 @@ export const codexParser: Parser = {
       if (!payload) continue;
 
       if (rec.type === 'session_meta') {
-        if (typeof payload.session_id === 'string') sessionId = payload.session_id;
+        // Multi-agent v2 (CLI >= 0.137): subagent threads are SEPARATE
+        // rollout files where payload.session_id holds the PARENT's id and
+        // payload.id holds this thread's own id. Keying by session_id there
+        // would collide with the parent row, so distinguish the two.
+        const own = typeof payload.id === 'string' ? payload.id : '';
+        const sess = typeof payload.session_id === 'string' ? payload.session_id : '';
+        if (payload.thread_source === 'subagent') {
+          sessionId = own || sess;
+          if (sess && sess !== sessionId) parentSessionId = sess;
+          const src = payload.source as Record<string, unknown> | undefined;
+          const sub = src?.subagent as Record<string, unknown> | undefined;
+          const kind = sub && typeof sub === 'object' ? Object.values(sub)[0] : undefined;
+          if (typeof kind === 'string') subagentLabel = kind;
+        } else {
+          sessionId = sess || own;
+        }
         if (typeof payload.cwd === 'string') cwd = payload.cwd;
       } else if (rec.type === 'turn_context') {
         if (typeof payload.model === 'string') model = payload.model;
@@ -80,7 +97,7 @@ export const codexParser: Parser = {
       sessionId: sessionId || idFromName || basename(path, '.jsonl'),
       logPath: path,
       project: cwd || 'unknown',
-      model: resolvedModel,
+      model: `${resolvedModel}${subagentLabel ? ` (subagent:${subagentLabel})` : ''}`,
       startedAt: first,
       endedAt: last,
       durationSec: durationSeconds(first, last),
@@ -90,6 +107,7 @@ export const codexParser: Parser = {
       estimated: !modelKnown,
       turns,
       lastEventAt: last,
+      parentSessionId,
     };
   },
 };

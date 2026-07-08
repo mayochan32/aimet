@@ -65,6 +65,17 @@ test('copilot: reduces incremental diffs and prefers actual credit cost', async 
   assert.equal(m.costUsd, 0.05, '5 credits x $0.01');
 });
 
+test('codex subagent (multi-agent v2): keys by own thread id and links parent', async () => {
+  const m = await codexParser.parseFile(fx('codex-subagent-basic.jsonl'));
+  assert.ok(m);
+  // payload.id is the thread's own id; payload.session_id is the PARENT.
+  assert.equal(m.sessionId, 'aaaa1111-0000-0000-0000-000000000001');
+  assert.equal(m.parentSessionId, 'bbbb2222-0000-0000-0000-000000000002');
+  assert.match(m.model, /\(subagent:guardian\)$/);
+  assert.equal(m.tokens.input, 111254 - 85888);
+  assert.equal(m.tokens.cacheRead, 85888);
+});
+
 test('copilot subagent: parses span traces, splits cached input, links parent', async () => {
   const m = await copilotSubagentParser.parseFile(fx('copilot-subagent-basic.jsonl'));
   assert.ok(m);
