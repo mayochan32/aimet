@@ -1,6 +1,6 @@
 /** Common metrics schema shared by all tool parsers. */
 
-export type Tool = 'claude' | 'codex' | 'copilot';
+export type Tool = 'claude' | 'codex' | 'copilot' | 'copilot-cli';
 
 export interface TokenUsage {
   input: number;

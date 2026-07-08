@@ -1,0 +1,9 @@
+{"type":"session.start","timestamp":"2026-06-03T00:00:00.000Z","id":"e0","data":{"sessionId":"sess-cli-1","copilotVersion":"1.0.68","context":{"cwd":"/proj/cli","repository":"me/repo","branch":"master"}}}
+{"type":"session.model_change","timestamp":"2026-06-03T00:00:01.000Z","id":"e1","data":{"newModel":"gpt-5.4"}}
+{"type":"assistant.turn_start","timestamp":"2026-06-03T00:00:02.000Z","id":"e2","data":{"turnId":"0"}}
+{"type":"assistant.message","timestamp":"2026-06-03T00:00:05.000Z","id":"e3","data":{"model":"gpt-5.4","outputTokens":100,"phase":"final_answer","turnId":"0"}}
+{"type":"assistant.turn_end","timestamp":"2026-06-03T00:00:06.000Z","id":"e4","data":{"turnId":"0"}}
+{ intentionally corrupt line
+{"type":"assistant.turn_start","timestamp":"2026-06-03T00:00:10.000Z","id":"e5","data":{"turnId":"1"}}
+{"type":"assistant.message","timestamp":"2026-06-03T00:00:14.000Z","id":"e6","data":{"model":"gpt-5.4","outputTokens":250,"phase":"final_answer","turnId":"1"}}
+{"type":"assistant.turn_end","timestamp":"2026-06-03T00:00:15.000Z","id":"e7","data":{"turnId":"1"}}

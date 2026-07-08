@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { claudeParser } from '../dist/parsers/claude.js';
 import { codexParser } from '../dist/parsers/codex.js';
 import { copilotParser } from '../dist/parsers/copilot.js';
+import { copilotCliParser } from '../dist/parsers/copilotcli.js';
 
 const fx = (name) => join(import.meta.dirname, 'fixtures', name);
 
@@ -61,4 +62,21 @@ test('copilot: reduces incremental diffs and prefers actual credit cost', async 
   assert.equal(m.model, 'gpt-5.2-codex');
   assert.equal(m.estimated, false, 'credits present -> actual cost');
   assert.equal(m.costUsd, 0.05, '5 credits x $0.01');
+});
+
+test('copilot-cli: sums output tokens, counts turns, leaves input/cost unknown', async () => {
+  const m = await copilotCliParser.parseFile(fx('copilotcli-basic.jsonl'));
+  assert.ok(m);
+  assert.equal(m.tool, 'copilot-cli');
+  assert.equal(m.sessionId, 'sess-cli-1');
+  assert.equal(m.project, '/proj/cli');
+  assert.equal(m.model, 'gpt-5.4');
+  assert.equal(m.turns, 2, 'two assistant.turn_start');
+  assert.equal(m.tokens.output, 350, '100 + 250 (corrupt line skipped)');
+  // Copilot CLI does not record input/cache tokens.
+  assert.equal(m.tokens.input, 0);
+  assert.equal(m.tokens.cacheRead, 0);
+  assert.equal(m.tokens.cacheWrite, 0);
+  // Input unknown -> no meaningful API-equivalent cost.
+  assert.equal(m.costUsd, null, 'cost must be null, not a misleading output-only figure');
 });

@@ -15,9 +15,11 @@
 | Claude Code | `~/.claude/projects/**/*.jsonl` | 実測（in / out / cacheR / cacheW、1h/5mキャッシュ内訳） | ✅ |
 | Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl` | 実測（in / cached / out / reasoning）＋レート制限時系列 | ✅ |
 | GitHub Copilot (VS Code Chat) | `<userData>/User/workspaceStorage/<hash>/chatSessions/*.jsonl` | 実測（prompt / completion）＋消費クレジット | ✅ |
-| GitHub Copilot CLI | `~/.copilot/session-state/` | 総量のみ | 🚧 予定 |
+| GitHub Copilot CLI | `~/.copilot/session-state/<uuid>/events.jsonl` | 実測（**出力トークンのみ**） | ✅ |
 
-> Copilotのログの場所（macOS）: `~/Library/Application Support/Code/User/workspaceStorage/`。記録されるのは**Chat/エージェントモードの対話のみ**で、インライン補完は残りません。VS Code Insiders等を使う場合は `aimet collect --dir` でパスを指定してください。
+> Copilot Chat（VS Code）のログの場所（macOS）: `~/Library/Application Support/Code/User/workspaceStorage/`。記録されるのは**Chat/エージェントモードの対話のみ**で、インライン補完は残りません。VS Code Insiders等を使う場合は `aimet collect --dir` でパスを指定してください。
+>
+> **Copilot CLI（`@github/copilot`）の注意**: レポート上は `copilot`（Chat版）と区別するため **`copilot-cli`** という別ツールとして集計します。CLIのログは**出力トークンしか記録しない**（入力・キャッシュのフィールドが存在しない）ため、`in` / `cacheR` / `cacheW` は常に0、コストは入力が不明で算出できないため **`-`（null）** になります。取得できるのは出力トークン・実行時間・ターン数・モデル・プロジェクトです。
 
 ## インストール
 
@@ -43,7 +45,8 @@ npm test
 - **Claude（未知モデル）**: 単価表にないモデルはコストを **`0`ではなく `null`** にすること。
 - **Codex**: `token_count` の累積値から**最大値**を採用し、`input_tokens` から `cached_input_tokens` を差し引いて非キャッシュ入力に分離すること。reasoningトークンも取得すること。
 - **Codex（モデル不明）**: 既定単価にフォールバックしつつ、単価が推定であることを **`estimated: true`** で明示すること。
-- **Copilot**: インクリメンタル差分ログを復元して `requests[]` を組み立て、クレジットが記録されていれば**API換算ではなく実費**（1クレジット=$0.01）でコストを出すこと。
+- **Copilot（Chat）**: インクリメンタル差分ログを復元して `requests[]` を組み立て、クレジットが記録されていれば**API換算ではなく実費**（1クレジット=$0.01）でコストを出すこと。
+- **Copilot CLI**: 出力トークンを合計しターン数を数える一方、**入力トークンは記録が無いため0**、コストは算出不可の **`null`** になること。壊れた行は無視すること。
 
 **`test/store.test.js` — 保存と冪等性**
 
@@ -134,7 +137,7 @@ aimet collect [--tool <tool>] [--since <days>] [--dir <path>]
 
 | オプション | 説明 |
 |---|---|
-| `--tool <claude\|codex\|copilot>` | 指定ツールのログのみ走査する。省略時は全ツール |
+| `--tool <claude\|codex\|copilot\|copilot-cli>` | 指定ツールのログのみ走査する。省略時は全ツール |
 | `--since <days>` | 最終更新が指定日数以内のログファイルのみ対象（差分取り込みの高速化） |
 | `--dir <path>` | デフォルトの代わりに指定ディレクトリを走査する（Insiders等の非標準パスやテスト用） |
 
@@ -223,6 +226,8 @@ aimet init <claude|codex|copilot> [--dry-run]
 | `claude` | `~/.claude/settings.json`（SessionEndフック）、`~/.claude/commands/metrics.md` |
 | `codex` | `~/.codex/hooks.json`（SessionEndフック）、`~/.codex/prompts/metrics.md` |
 | `copilot` | `~/.copilot/hooks/aimet.json`（Stopフック）、`<userData>/User/prompts/metrics.prompt.md` |
+
+> **copilot-cli について**: 専用の `init` はありません。`~/.copilot/hooks/` は**VS CodeとCopilot CLIの両方が読む**ため、`aimet init copilot` で登録したStopフックがCLIセッション終了時にも発火し、フックのフォールバックスキャンは `copilot` と `copilot-cli` の両方を取り込みます。
 
 | オプション | 説明 |
 |---|---|
@@ -441,11 +446,10 @@ cost = ( input × 入力単価
 
 - [report.md](examples/report.md) — 期間集計（`aimet report --by tool --md`）
 - [session-claude.md](examples/session-claude.md) / [session-codex.md](examples/session-codex.md) / [session-copilot.md](examples/session-copilot.md) — セッションサマリ
-- [detail-claude.md](examples/detail-claude.md) / [detail-codex.md](examples/detail-codex.md) / [detail-copilot.md](examples/detail-copilot.md) — 全記録の詳細ダンプ
+- [detail-claude.md](examples/detail-claude.md) / [detail-codex.md](examples/detail-codex.md) / [detail-copilot.md](examples/detail-copilot.md) / [detail-copilotcli.md](examples/detail-copilotcli.md) — 全記録の詳細ダンプ
 
 ## ロードマップ
 
-- GitHub Copilot CLIパーサー（`~/.copilot/session-state/`、スキーマ確認後）
 - `aimet serve`: ローカルHTMLダッシュボード
 - MCPサーバー化（3環境共通の対話発動口）
 

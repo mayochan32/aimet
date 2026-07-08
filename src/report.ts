@@ -111,6 +111,13 @@ export function costLabel(r: Record<string, unknown>): string {
   return ' (API-equivalent)';
 }
 
+/** Why a session has no cost. Copilot CLI logs no input tokens; others = unknown model. */
+export function noCostLabel(r: Record<string, unknown>): string {
+  return r.tool === 'copilot-cli'
+    ? 'n/a (Copilot CLI records no input tokens)'
+    : 'unknown model';
+}
+
 /** Latest matching session row, or null. */
 export function sessionRow(
   store: Store,
@@ -139,7 +146,7 @@ export function sessionSummary(store: Store, opts: { tool?: string; id?: string 
     `time    : ${r.started_at} -> ${r.ended_at} (active ${fmtHours(num(r.active_sec))} / wall ${fmtHours(num(r.duration_sec))})`,
     `turns   : ${r.turns}`,
     `tokens  : in ${fmtTokens(num(r.input_tokens))} / out ${fmtTokens(num(r.output_tokens))} / cacheR ${fmtTokens(num(r.cache_read_tokens))} / cacheW ${fmtTokens(num(r.cache_write_tokens))}`,
-    `cost    : ${r.cost_usd == null ? 'unknown model' : '$' + num(r.cost_usd).toFixed(4) + costLabel(r)}`,
+    `cost    : ${r.cost_usd == null ? noCostLabel(r) : '$' + num(r.cost_usd).toFixed(4) + costLabel(r)}`,
     '',
     'コストは参考値。実際の実行環境に合わせて計算してください。',
   ].join('\n');

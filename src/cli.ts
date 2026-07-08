@@ -13,7 +13,7 @@ import { detail } from './detail.js';
 const USAGE = `aimet - AI Metrics for Claude Code / Codex / GitHub Copilot
 
 Usage:
-  aimet collect [--tool claude|codex] [--since <days>] [--dir <path>]
+  aimet collect [--tool claude|codex|copilot|copilot-cli] [--since <days>] [--dir <path>]
   aimet report  [--period daily|weekly|monthly] [--by tool|project|model]
               [--tool <tool>] [--since <days>] [--json] [--md <file>]
   aimet session [--tool <tool>] [--id <prefix>] [--md <file>]
@@ -178,7 +178,10 @@ async function main(): Promise<void> {
           }
         }
         // Fallback: incremental scan of recent logs for this tool.
-        if (!handled) await collect({ store, tools: [parser.tool], sinceDays: 2, quiet: true });
+        // ~/.copilot/hooks is read by BOTH VS Code and Copilot CLI, so a
+        // "copilot" hook invocation also sweeps copilot-cli sessions.
+        const sweep = parser.tool === 'copilot' ? ['copilot', 'copilot-cli'] : [parser.tool];
+        if (!handled) await collect({ store, tools: sweep, sinceDays: 2, quiet: true });
       } finally {
         store.close();
       }

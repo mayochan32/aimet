@@ -160,6 +160,24 @@ export function detailMd(d: Record<string, unknown>): string {
     );
   }
 
+  if (d.tool === 'copilot-cli') {
+    const reqs = d.requests as Record<string, unknown>[];
+    out.push('## Assistant messages', '', '_Copilot CLI records output tokens only (no input/cache)._', '');
+    out.push(
+      table(
+        ['timestamp', 'model', 'phase', 'out', 'turn'],
+        reqs.map((q) => [
+          String(q.timestamp ?? ''),
+          String(q.model ?? ''),
+          String(q.phase ?? ''),
+          String(q.outputTokens ?? '-'),
+          String(q.turnId ?? ''),
+        ])
+      ),
+      ''
+    );
+  }
+
   if (d.tool === 'codex') {
     const tcs = d.turnContexts as Record<string, unknown>[];
     out.push('## Turn contexts', '');

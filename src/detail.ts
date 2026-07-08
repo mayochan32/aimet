@@ -120,6 +120,44 @@ export async function detailCopilot(path: string, raw = false): Promise<Record<s
   };
 }
 
+export async function detailCopilotCli(path: string, raw = false): Promise<Record<string, unknown>> {
+  const meta: Record<string, unknown> = {};
+  const eventCounts: Record<string, number> = {};
+  const models = new Set<string>();
+  const messages: Record<string, unknown>[] = [];
+
+  for await (const rec of jsonlRecords(path)) {
+    const type = String(rec.type ?? 'unknown');
+    eventCounts[type] = (eventCounts[type] ?? 0) + 1;
+    const data = (rec.data ?? {}) as Record<string, unknown>;
+
+    if (type === 'session.start') {
+      meta.sessionId = data.sessionId;
+      meta.copilotVersion = data.copilotVersion;
+      const ctx = (data.context ?? {}) as Record<string, unknown>;
+      meta.cwd = ctx.cwd;
+      meta.repository = ctx.repository ?? null;
+      meta.branch = ctx.branch ?? null;
+    } else if (type === 'session.model_change') {
+      if (typeof data.newModel === 'string') models.add(data.newModel);
+    }
+    if (typeof data.model === 'string' && data.model) models.add(data.model);
+
+    if (type === 'assistant.message' || (typeof data.outputTokens === 'number')) {
+      messages.push({
+        timestamp: rec.timestamp,
+        type,
+        model: data.model ?? null,
+        phase: data.phase ?? null,
+        outputTokens: data.outputTokens ?? null,
+        turnId: data.turnId ?? null,
+        ...(raw ? { rawRecord: rec } : {}),
+      });
+    }
+  }
+  return { tool: 'copilot-cli', logPath: path, meta, models: [...models], eventCounts, requests: messages };
+}
+
 export async function detail(
   tool: string,
   path: string,
@@ -128,5 +166,6 @@ export async function detail(
   if (tool === 'claude') return detailClaude(path, raw);
   if (tool === 'codex') return detailCodex(path, raw);
   if (tool === 'copilot') return detailCopilot(path, raw);
+  if (tool === 'copilot-cli') return detailCopilotCli(path, raw);
   throw new Error(`detail not supported for tool: ${tool}`);
 }
