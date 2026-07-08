@@ -15,11 +15,25 @@
 | Claude Code | `~/.claude/projects/**/*.jsonl` | 実測（in / out / cacheR / cacheW、1h/5mキャッシュ内訳） | ✅ |
 | Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl` | 実測（in / cached / out / reasoning）＋レート制限時系列 | ✅ |
 | GitHub Copilot (VS Code Chat) | `<userData>/User/workspaceStorage/<hash>/chatSessions/*.jsonl` | 実測（prompt / completion）＋消費クレジット | ✅ |
+| GitHub Copilot サブエージェント | `<userData>/User/workspaceStorage/<hash>/GitHub.copilot-chat/debug-logs/<親uuid>/runSubagent-*.jsonl` | 実測（in / cached / out、リクエスト単位） | ✅ |
 | GitHub Copilot CLI | `~/.copilot/session-state/<uuid>/events.jsonl` | 実測（**出力トークンのみ**） | ✅ |
 
 > Copilot Chat（VS Code）のログの場所（macOS）: `~/Library/Application Support/Code/User/workspaceStorage/`。記録されるのは**Chat/エージェントモードの対話のみ**で、インライン補完は残りません。VS Code Insiders等を使う場合は `aimet collect --dir` でパスを指定してください。
 >
 > **Copilot CLI（`@github/copilot`）の注意**: レポート上は `copilot`（Chat版）と区別するため **`copilot-cli`** という別ツールとして集計します。CLIのログは**出力トークンしか記録しない**（入力・キャッシュのフィールドが存在しない）ため、`in` / `cacheR` / `cacheW` は常に0、コストは入力が不明で算出できないため **`-`（null）** になります。取得できるのは出力トークン・実行時間・ターン数・モデル・プロジェクトです。
+
+### マルチエージェント（サブエージェント）の扱い
+
+Copilotの親エージェントが `runSubagent` で子エージェントを起動した場合、**子の消費は `chatSessions/` には記録されません**。子は別ディレクトリ（`GitHub.copilot-chat/debug-logs/<親セッションuuid>/runSubagent-*.jsonl`）に**スパントレース形式**で保存されます。実測ではこの子側が親の数倍のトークンを消費するケースがあり、chatSessionsだけを見るとコストを大幅に過小評価します。
+
+aimetは両方を取り込みます：
+
+- 子セッションは `copilot` ツールの**独立した行**としてDBに入り、`parent_session_id` で親に紐づきます（レポートの合計にも自然に含まれます）
+- `aimet session --id <親ID>` を実行すると、親の値に加えて **`subagents:` 行（子の合算）と `TOTAL(with subagents):`** が表示されます
+- 二重計上の防止: 同ディレクトリの `main.jsonl` は親自身のスパンで chatSessions と重複するため取り込みません（`title-*.jsonl` も対象外）
+- 子のコストはクレジット記録がないため**API換算の推定値**（`estimated` フラグ、表示 `*`）です
+
+> **前提条件**: debug-logs は Copilot Chat のデバッグファイルロギングが有効な場合にのみ書き出されます（バージョン・実験フラグにより挙動が変わる報告あり）。ログが出ていない環境では子セッションの消費はディスクから回収できません。`find <userData>/User/workspaceStorage -path '*debug-logs*' -name 'runSubagent-*.jsonl'` で存在確認できます。
 
 ## インストール
 
@@ -446,7 +460,7 @@ cost = ( input × 入力単価
 
 - [report.md](examples/report.md) — 期間集計（`aimet report --by tool --md`）
 - [session-claude.md](examples/session-claude.md) / [session-codex.md](examples/session-codex.md) / [session-copilot.md](examples/session-copilot.md) — セッションサマリ
-- [detail-claude.md](examples/detail-claude.md) / [detail-codex.md](examples/detail-codex.md) / [detail-copilot.md](examples/detail-copilot.md) / [detail-copilotcli.md](examples/detail-copilotcli.md) — 全記録の詳細ダンプ
+- [detail-claude.md](examples/detail-claude.md) / [detail-codex.md](examples/detail-codex.md) / [detail-copilot.md](examples/detail-copilot.md) / [detail-copilot-subagent.md](examples/detail-copilot-subagent.md) / [detail-copilotcli.md](examples/detail-copilotcli.md) — 全記録の詳細ダンプ
 
 ## ロードマップ
 

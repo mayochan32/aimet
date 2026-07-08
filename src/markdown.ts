@@ -139,7 +139,26 @@ export function detailMd(d: Record<string, unknown>): string {
     );
   }
 
-  if (d.tool === 'copilot') {
+  if (d.tool === 'copilot' && d.format === 'span') {
+    const reqs = d.requests as Record<string, unknown>[];
+    out.push('## LLM requests (subagent span trace)', '');
+    out.push(
+      table(
+        ['timestamp', 'model', 'debugName', 'in', 'cached', 'out', 'ttft', 'dur'],
+        reqs.map((q) => [
+          fmtLocal(String(q.timestamp)),
+          String(q.model ?? ''),
+          String(q.debugName ?? ''),
+          String(q.inputTokens ?? '-'),
+          String(q.cachedTokens ?? '-'),
+          String(q.outputTokens ?? '-'),
+          q.ttftMs == null ? '-' : String(q.ttftMs) + 'ms',
+          q.durMs == null ? '-' : (Number(q.durMs) / 1000).toFixed(1) + 's',
+        ])
+      ),
+      ''
+    );
+  } else if (d.tool === 'copilot') {
     const reqs = d.requests as Record<string, unknown>[];
     out.push('## Requests', '');
     out.push(

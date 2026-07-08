@@ -35,6 +35,8 @@ export interface SessionMetrics {
   turns: number;
   /** ISO timestamp of the last event ingested (for idempotent upsert) */
   lastEventAt: string;
+  /** parent session id when this is a subagent (child) session; else null */
+  parentSessionId?: string | null;
 }
 
 /** Gap threshold (ms) above which time is considered idle. */

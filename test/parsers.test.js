@@ -6,6 +6,7 @@ import { claudeParser } from '../dist/parsers/claude.js';
 import { codexParser } from '../dist/parsers/codex.js';
 import { copilotParser } from '../dist/parsers/copilot.js';
 import { copilotCliParser } from '../dist/parsers/copilotcli.js';
+import { copilotSubagentParser } from '../dist/parsers/copilotsubagent.js';
 
 const fx = (name) => join(import.meta.dirname, 'fixtures', name);
 
@@ -62,6 +63,28 @@ test('copilot: reduces incremental diffs and prefers actual credit cost', async 
   assert.equal(m.model, 'gpt-5.2-codex');
   assert.equal(m.estimated, false, 'credits present -> actual cost');
   assert.equal(m.costUsd, 0.05, '5 credits x $0.01');
+});
+
+test('copilot subagent: parses span traces, splits cached input, links parent', async () => {
+  const m = await copilotSubagentParser.parseFile(fx('copilot-subagent-basic.jsonl'));
+  assert.ok(m);
+  assert.equal(m.tool, 'copilot');
+  assert.equal(m.sessionId, 'call_TESTSUBAGENT01');
+  assert.equal(m.parentSessionId, '11111111-2222-3333-4444-555555555555');
+  assert.equal(m.turns, 2, 'two turn_start');
+  // inputTokens includes cachedTokens -> split: (11339-2560) + (20000-15000)
+  assert.equal(m.tokens.input, 8779 + 5000);
+  assert.equal(m.tokens.cacheRead, 2560 + 15000);
+  assert.equal(m.tokens.output, 421 + 1000);
+  assert.match(m.model, /^gpt-5\.4-mini/);
+  assert.equal(m.estimated, true, 'span logs carry no credits -> API-equivalent estimate');
+  assert.ok(m.costUsd > 0);
+});
+
+test('copilot subagent: rejects non-subagent span files via isLogFile', () => {
+  assert.equal(copilotSubagentParser.isLogFile('/x/debug-logs/u/main.jsonl'), false);
+  assert.equal(copilotSubagentParser.isLogFile('/x/debug-logs/u/title-a.jsonl'), false);
+  assert.equal(copilotSubagentParser.isLogFile('/x/debug-logs/u/runSubagent-Explore-call_1.jsonl'), true);
 });
 
 test('copilot-cli: sums output tokens, counts turns, leaves input/cost unknown', async () => {

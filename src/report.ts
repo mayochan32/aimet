@@ -135,18 +135,43 @@ export function sessionRow(
   return rows[0] ?? null;
 }
 
+/** Aggregate of subagent (child) sessions for a parent, or null. */
+export function childrenRollup(
+  store: Store,
+  sessionId: unknown
+): Record<string, unknown> | null {
+  const rows = store.query(
+    `SELECT COUNT(*) AS n, SUM(input_tokens) AS input, SUM(output_tokens) AS output,
+            SUM(cache_read_tokens) AS cache_read, SUM(cost_usd) AS cost_usd,
+            SUM(turns) AS turns
+     FROM sessions WHERE parent_session_id = ?`,
+    sessionId
+  );
+  return rows.length && Number(rows[0].n) > 0 ? rows[0] : null;
+}
+
 /** Human summary for one session (used by `aimet session` / skills). */
 export function sessionSummary(store: Store, opts: { tool?: string; id?: string }): string {
   const r = sessionRow(store, opts);
   if (!r) return 'Session not found.';
+  const kids = childrenRollup(store, r.session_id);
+  const kidLines = kids
+    ? [
+        `subagents: ${kids.n} sessions / turns ${kids.turns} / in ${fmtTokens(num(kids.input))} / out ${fmtTokens(num(kids.output))} / cacheR ${fmtTokens(num(kids.cache_read))} / cost +$${num(kids.cost_usd).toFixed(4)} (API-equivalent, estimated)`,
+        `TOTAL(with subagents): cost $${(num(r.cost_usd) + num(kids.cost_usd)).toFixed(4)}`,
+      ]
+    : [];
+  const parentLine = r.parent_session_id ? [`parent  : ${r.parent_session_id}`] : [];
   return [
     `session : ${r.tool} ${r.session_id}`,
+    ...parentLine,
     `project : ${r.project}`,
     `model   : ${r.model}`,
     `time    : ${r.started_at} -> ${r.ended_at} (active ${fmtHours(num(r.active_sec))} / wall ${fmtHours(num(r.duration_sec))})`,
     `turns   : ${r.turns}`,
     `tokens  : in ${fmtTokens(num(r.input_tokens))} / out ${fmtTokens(num(r.output_tokens))} / cacheR ${fmtTokens(num(r.cache_read_tokens))} / cacheW ${fmtTokens(num(r.cache_write_tokens))}`,
     `cost    : ${r.cost_usd == null ? noCostLabel(r) : '$' + num(r.cost_usd).toFixed(4) + costLabel(r)}`,
+    ...kidLines,
     '',
     'コストは参考値。実際の実行環境に合わせて計算してください。',
   ].join('\n');

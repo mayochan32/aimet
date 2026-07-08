@@ -158,6 +158,43 @@ export async function detailCopilotCli(path: string, raw = false): Promise<Recor
   return { tool: 'copilot-cli', logPath: path, meta, models: [...models], eventCounts, requests: messages };
 }
 
+/** Copilot subagent span-trace logs (debug-logs/<uuid>/runSubagent-*.jsonl). */
+export async function detailCopilotSpan(path: string, raw = false): Promise<Record<string, unknown>> {
+  const meta: Record<string, unknown> = {};
+  const eventCounts: Record<string, number> = {};
+  const models = new Set<string>();
+  const requests: Record<string, unknown>[] = [];
+
+  for await (const rec of jsonlRecords(path)) {
+    const type = String(rec.type ?? 'unknown');
+    eventCounts[type] = (eventCounts[type] ?? 0) + 1;
+    const attrs = (rec.attrs ?? {}) as Record<string, unknown>;
+
+    if (type === 'session_start') {
+      meta.sessionId = rec.sid;
+      meta.parentSessionId = attrs.parentSessionId ?? null;
+      meta.label = attrs.label ?? null;
+      meta.copilotVersion = attrs.copilotVersion ?? null;
+      meta.vscodeVersion = attrs.vscodeVersion ?? null;
+    } else if (type === 'llm_request') {
+      if (typeof attrs.model === 'string') models.add(attrs.model);
+      requests.push({
+        timestamp: new Date(Number(rec.ts ?? 0)).toISOString(),
+        model: attrs.model ?? null,
+        debugName: attrs.debugName ?? null,
+        inputTokens: attrs.inputTokens ?? null,
+        cachedTokens: attrs.cachedTokens ?? null,
+        outputTokens: attrs.outputTokens ?? null,
+        ttftMs: attrs.ttft ?? null,
+        durMs: rec.dur ?? null,
+        status: rec.status ?? null,
+        ...(raw ? { rawRecord: rec } : {}),
+      });
+    }
+  }
+  return { tool: 'copilot', format: 'span', logPath: path, meta, models: [...models], eventCounts, requests };
+}
+
 export async function detail(
   tool: string,
   path: string,
@@ -165,7 +202,12 @@ export async function detail(
 ): Promise<Record<string, unknown>> {
   if (tool === 'claude') return detailClaude(path, raw);
   if (tool === 'codex') return detailCodex(path, raw);
-  if (tool === 'copilot') return detailCopilot(path, raw);
+  if (tool === 'copilot') {
+    // Subagent logs use the span-trace format, not the chatSessions format.
+    return /(^|\/)runSubagent-[^/]*\.jsonl$/.test(path)
+      ? detailCopilotSpan(path, raw)
+      : detailCopilot(path, raw);
+  }
   if (tool === 'copilot-cli') return detailCopilotCli(path, raw);
   throw new Error(`detail not supported for tool: ${tool}`);
 }

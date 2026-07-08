@@ -1,0 +1,8 @@
+{"v":1,"ts":1783373827017,"dur":0,"sid":"call_TESTSUBAGENT01","type":"session_start","name":"session_start","spanId":"s0","status":"ok","attrs":{"copilotVersion":"0.55.0","vscodeVersion":"1.127.0","parentSessionId":"11111111-2222-3333-4444-555555555555","label":"runSubagent-Explore"}}
+{"ts":1783373827017,"dur":0,"sid":"call_TESTSUBAGENT01","type":"user_message","name":"user_message","spanId":"s1","parentSpanId":"s0","status":"ok","attrs":{"content":"explore"}}
+{"ts":1783373827017,"dur":0,"sid":"call_TESTSUBAGENT01","type":"turn_start","name":"turn_start:0","spanId":"t0","parentSpanId":"s1","status":"ok","attrs":{"turnId":"0"}}
+{"ts":1783373827033,"dur":4826,"sid":"call_TESTSUBAGENT01","type":"llm_request","name":"llm_request","spanId":"l0","parentSpanId":"t0","status":"ok","attrs":{"model":"gpt-5.4-mini","debugName":"tool/runSubagent-Explore","inputTokens":11339,"outputTokens":421,"cachedTokens":2560,"ttft":327}}
+{"ts":1783373832000,"dur":0,"sid":"call_TESTSUBAGENT01","type":"turn_start","name":"turn_start:1","spanId":"t1","parentSpanId":"s1","status":"ok","attrs":{"turnId":"1"}}
+{"ts":1783373832100,"dur":3000,"sid":"call_TESTSUBAGENT01","type":"llm_request","name":"llm_request","spanId":"l1","parentSpanId":"t1","status":"ok","attrs":{"model":"gpt-5.4-mini","debugName":"tool/runSubagent-Explore","inputTokens":20000,"outputTokens":1000,"cachedTokens":15000,"ttft":300}}
+{"ts":1783373856775,"dur":0,"sid":"call_TESTSUBAGENT01","type":"turn_end","name":"turn_end:1","spanId":"e1","parentSpanId":"s1","status":"ok","attrs":{}}
+broken line to be ignored

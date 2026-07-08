@@ -15,6 +15,10 @@ const DEFAULT_PRICING: Record<string, [number, number, number, number]> = {
   'claude-haiku-4': [1, 5, 0.1, 1.25],
   'claude-3-5-haiku': [0.8, 4, 0.08, 1],
   // OpenAI (cacheWrite not billed separately -> 0)
+  'gpt-5.4-mini': [0.25, 2, 0.025, 0],
+  'gpt-5.4': [1.75, 14, 0.175, 0],
+  'gpt-5.3-codex': [1.75, 14, 0.175, 0],
+  'gpt-5.3': [1.75, 14, 0.175, 0],
   'gpt-5.2-codex': [1.75, 14, 0.175, 0],
   'gpt-5.1-codex': [1.25, 10, 0.125, 0],
   'gpt-5-codex': [1.25, 10, 0.125, 0],

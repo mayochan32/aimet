@@ -59,16 +59,27 @@ export async function reduceSession(path: string): Promise<Record<string, unknow
 const iso = (ms: unknown): string =>
   typeof ms === 'number' && ms > 0 ? new Date(ms).toISOString() : '';
 
-/** Workspace folder from the sibling workspace.json (best effort). */
-function projectOf(logPath: string): string {
-  const ws = join(dirname(dirname(logPath)), 'workspace.json');
-  if (existsSync(ws)) {
-    try {
-      const folder = (JSON.parse(readFileSync(ws, 'utf8')) as { folder?: string }).folder;
-      if (folder) return decodeURIComponent(folder.replace(/^file:\/\//, ''));
-    } catch {
-      /* fall through */
+/**
+ * Workspace folder from workspace.json (best effort). Walks up from the log
+ * file because the depth differs: chatSessions/*.jsonl sits 2 levels below
+ * the <hash> dir, debug-logs/<uuid>/*.jsonl sits 4 levels below.
+ */
+export function projectOf(logPath: string): string {
+  let dir = dirname(logPath);
+  for (let i = 0; i < 5; i++) {
+    const ws = join(dir, 'workspace.json');
+    if (existsSync(ws)) {
+      try {
+        const folder = (JSON.parse(readFileSync(ws, 'utf8')) as { folder?: string }).folder;
+        if (folder) return decodeURIComponent(folder.replace(/^file:\/\//, ''));
+      } catch {
+        /* fall through */
+      }
+      break;
     }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
   }
   return 'unknown';
 }

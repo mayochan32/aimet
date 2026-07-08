@@ -56,6 +56,12 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at);
       CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
     `);
+    // Migration: parent_session_id links subagent (child) sessions to their
+    // parent (Copilot multi-agent). NULL for top-level sessions.
+    const cols = this.db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[];
+    if (!cols.some((c) => c.name === 'parent_session_id')) {
+      this.db.exec('ALTER TABLE sessions ADD COLUMN parent_session_id TEXT');
+    }
   }
 
   /** Idempotent upsert keyed by (tool, session_id); skips stale data. */
@@ -69,8 +75,8 @@ export class Store {
         `INSERT INTO sessions (tool, session_id, log_path, project, model,
            started_at, ended_at, duration_sec, active_sec,
            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
-           cost_usd, estimated, turns, last_event_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           cost_usd, estimated, turns, last_event_at, updated_at, parent_session_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(tool, session_id) DO UPDATE SET
            log_path=excluded.log_path, project=excluded.project, model=excluded.model,
            started_at=excluded.started_at, ended_at=excluded.ended_at,
@@ -79,14 +85,15 @@ export class Store {
            cache_read_tokens=excluded.cache_read_tokens, cache_write_tokens=excluded.cache_write_tokens,
            reasoning_tokens=excluded.reasoning_tokens, cost_usd=excluded.cost_usd,
            estimated=excluded.estimated, turns=excluded.turns,
-           last_event_at=excluded.last_event_at, updated_at=excluded.updated_at`
+           last_event_at=excluded.last_event_at, updated_at=excluded.updated_at,
+           parent_session_id=excluded.parent_session_id`
       )
       .run(
         m.tool, m.sessionId, m.logPath, m.project, m.model,
         m.startedAt, m.endedAt, m.durationSec, m.activeSec,
         m.tokens.input, m.tokens.output, m.tokens.cacheRead, m.tokens.cacheWrite,
         m.tokens.reasoning, m.costUsd, m.estimated ? 1 : 0, m.turns,
-        m.lastEventAt, new Date().toISOString()
+        m.lastEventAt, new Date().toISOString(), m.parentSessionId ?? null
       );
     return existing ? 'updated' : 'inserted';
   }
