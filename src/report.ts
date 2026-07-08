@@ -5,7 +5,37 @@ export interface ReportOpts {
   by?: 'tool' | 'project' | 'model';
   tool?: string;
   sinceDays?: number;
+  /** inclusive range on started_at; ISO strings (see parseTimeArg) */
+  startISO?: string;
+  endISO?: string;
   json?: boolean;
+}
+
+/**
+ * Parse a LOCAL-time stamp "YYYYMMDD[hh[mm[ss]]]" into an ISO(UTC) string.
+ * Missing trailing parts default to the start of the unit; pass end=true to
+ * default to the END of the unit instead (23:59:59 etc.), so that
+ * --start 20260701 --end 20260707 covers the whole final day.
+ */
+export function parseTimeArg(s: string, end = false): string {
+  const digits = s.replace(/[^0-9]/g, '');
+  if (!/^\d{8}(\d{2}){0,3}$/.test(digits)) {
+    throw new Error(`invalid time "${s}" (expected YYYYMMDD[hh[mm[ss]]])`);
+  }
+  const pad = end ? ['23', '59', '59'] : ['00', '00', '00'];
+  const hh = digits.slice(8, 10) || pad[0];
+  const mm = digits.slice(10, 12) || pad[1];
+  const ss = digits.slice(12, 14) || pad[2];
+  const d = new Date(
+    Number(digits.slice(0, 4)),
+    Number(digits.slice(4, 6)) - 1,
+    Number(digits.slice(6, 8)),
+    Number(hh),
+    Number(mm),
+    Number(ss)
+  );
+  if (Number.isNaN(d.getTime())) throw new Error(`invalid time "${s}"`);
+  return d.toISOString();
 }
 
 const num = (v: unknown) => Number(v ?? 0);
@@ -57,6 +87,14 @@ export function reportRows(store: Store, opts: ReportOpts = {}): Record<string, 
   if (opts.tool) {
     conds.push('tool = ?');
     params.push(opts.tool);
+  }
+  if (opts.startISO) {
+    conds.push('started_at >= ?');
+    params.push(opts.startISO);
+  }
+  if (opts.endISO) {
+    conds.push('started_at <= ?');
+    params.push(opts.endISO);
   }
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
 

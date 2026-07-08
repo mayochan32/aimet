@@ -163,7 +163,9 @@ aimet collect [--tool <tool>] [--since <days>] [--dir <path>]
 
 ```
 aimet report [--period daily|weekly|monthly] [--by tool|project|model]
-             [--tool <tool>] [--since <days>] [--json] [--md <file>]
+             [--tool <tool>] [--since <days>]
+             [--start <YYYYMMDDhhmmss>] [--end <YYYYMMDDhhmmss>]
+             [--json] [--md <file>]
 ```
 
 DB内のセッションを期間バケットで集計して表示する。
@@ -174,6 +176,7 @@ DB内のセッションを期間バケットで集計して表示する。
 | `--by <tool\|project\|model>` | 指定軸で行を分割し横断比較する |
 | `--tool <tool>` | 指定ツールのセッションのみ集計する（`--by` と併用可） |
 | `--since <days>` | 直近N日のセッションのみ集計する |
+| `--start <時刻>` / `--end <時刻>` | セッション開始時刻（started_at）がこの範囲のものだけ集計する。**ローカル時刻**の `YYYYMMDDhhmmss` 形式。短縮形可：`20260707` は日全体、`2026070709` は9時台を指す（startは期間の頭、endは期間の末尾に自動補完）。`2026-07-07 09:00:00` のような区切り文字入りも受け付ける |
 | `--json` | 生値（未丸め）のJSONで出力する。BI・スプレッドシート連携用 |
 | `--md <file>` | Markdownの表としてファイルに書き出す |
 

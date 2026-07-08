@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { Store } from './store.js';
 import { collect, ingestFile } from './collect.js';
 import { writeFileSync } from 'node:fs';
-import { report, reportRows, sessionSummary, sessionRow, childrenRows } from './report.js';
+import { report, reportRows, sessionSummary, sessionRow, childrenRows, parseTimeArg } from './report.js';
 import { reportMd, sessionMd, detailMd } from './markdown.js';
 import { parserFor } from './parsers/index.js';
 import { initTool } from './init.js';
@@ -15,7 +15,11 @@ const USAGE = `aimet - AI Metrics for Claude Code / Codex / GitHub Copilot
 Usage:
   aimet collect [--tool claude|codex|copilot|copilot-cli] [--since <days>] [--dir <path>]
   aimet report  [--period daily|weekly|monthly] [--by tool|project|model]
-              [--tool <tool>] [--since <days>] [--json] [--md <file>]
+              [--tool <tool>] [--since <days>]
+              [--start <YYYYMMDDhhmmss>] [--end <YYYYMMDDhhmmss>]
+              [--json] [--md <file>]
+              (--start/--end are LOCAL time; shorter forms like YYYYMMDD are
+               padded to the start/end of the unit respectively)
   aimet session [--tool <tool>] [--id <prefix>] [--md <file>]
   aimet detail  [--tool <tool>] [--id <prefix>] [--file <log.jsonl>]
               [--raw] [--md <file>]
@@ -47,6 +51,8 @@ async function main(): Promise<void> {
       by: { type: 'string' },
       id: { type: 'string' },
       file: { type: 'string' },
+      start: { type: 'string' },
+      end: { type: 'string' },
       json: { type: 'boolean' },
       raw: { type: 'boolean' },
       md: { type: 'string' },
@@ -80,6 +86,8 @@ async function main(): Promise<void> {
         by: values.by as never,
         tool: values.tool,
         sinceDays: values.since ? Number(values.since) : undefined,
+        startISO: values.start ? parseTimeArg(values.start) : undefined,
+        endISO: values.end ? parseTimeArg(values.end, true) : undefined,
         json: values.json,
       };
       if (values.md) {
