@@ -1,4 +1,4 @@
-import { fmtTokens, fmtHours, costLabel } from './report.js';
+import { fmtTokens, fmtHours, costLabel, tok } from './report.js';
 
 /** Markdown renderers for the three output levels: report / session / detail. */
 
@@ -51,10 +51,10 @@ export function reportMd(
     String(r.turns),
     fmtHours(num(r.active_sec)),
     fmtHours(num(r.duration_sec)),
-    fmtTokens(num(r.input)),
-    fmtTokens(num(r.output)),
-    fmtTokens(num(r.cache_read)),
-    fmtTokens(num(r.cache_write)),
+    tok(r.input),
+    tok(r.output),
+    tok(r.cache_read),
+    tok(r.cache_write),
     r.cost_usd == null ? '-' : num(r.cost_usd).toFixed(2) + (num(r.estimated) ? ' *' : ''),
   ]);
   return [
@@ -85,9 +85,9 @@ export function sessionMd(
             String(k.session_id),
             String(k.model),
             String(k.turns),
-            fmtTokens(num(k.input_tokens)),
-            fmtTokens(num(k.output_tokens)),
-            fmtTokens(num(k.cache_read_tokens)),
+            tok(k.input_tokens),
+            tok(k.output_tokens),
+            tok(k.cache_read_tokens),
             fmtHours(num(k.active_sec)),
             k.cost_usd == null ? '-' : num(k.cost_usd).toFixed(4) + (num(k.estimated) ? ' *' : ''),
           ])
@@ -111,11 +111,11 @@ export function sessionMd(
         ['ended', fmtLocal(r.ended_at)],
         ['active / wall', `${fmtHours(num(r.active_sec))} / ${fmtHours(num(r.duration_sec))}`],
         ['turns', String(r.turns)],
-        ['input tokens', num(r.input_tokens).toLocaleString()],
-        ['output tokens', num(r.output_tokens).toLocaleString()],
-        ['cache read', num(r.cache_read_tokens).toLocaleString()],
-        ['cache write', num(r.cache_write_tokens).toLocaleString()],
-        ['reasoning', num(r.reasoning_tokens).toLocaleString()],
+        ['input tokens', r.input_tokens == null ? '-' : num(r.input_tokens).toLocaleString()],
+        ['output tokens', r.output_tokens == null ? '-' : num(r.output_tokens).toLocaleString()],
+        ['cache read', r.cache_read_tokens == null ? '-' : num(r.cache_read_tokens).toLocaleString()],
+        ['cache write', r.cache_write_tokens == null ? '-' : num(r.cache_write_tokens).toLocaleString()],
+        ['reasoning', r.reasoning_tokens == null ? '-' : num(r.reasoning_tokens).toLocaleString()],
         ['cost', r.cost_usd == null ? 'unknown model' : '$' + num(r.cost_usd).toFixed(4) + costLabel(r)],
         ['log file', String(r.log_path)],
       ]

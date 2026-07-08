@@ -58,9 +58,61 @@ export class Store {
     `);
     // Migration: parent_session_id links subagent (child) sessions to their
     // parent (Copilot multi-agent). NULL for top-level sessions.
-    const cols = this.db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[];
+    const cols = this.db.prepare('PRAGMA table_info(sessions)').all() as {
+      name: string;
+      notnull: number;
+    }[];
     if (!cols.some((c) => c.name === 'parent_session_id')) {
       this.db.exec('ALTER TABLE sessions ADD COLUMN parent_session_id TEXT');
+    }
+    // Migration: token columns become NULLABLE. NULL = "the tool's log does
+    // not record this value" (rendered as -), distinct from a measured 0.
+    const inputCol = cols.find((c) => c.name === 'input_tokens');
+    if (inputCol && inputCol.notnull === 1) {
+      this.db.exec(`
+        BEGIN;
+        CREATE TABLE sessions_new (
+          tool TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          log_path TEXT NOT NULL,
+          project TEXT NOT NULL,
+          model TEXT NOT NULL,
+          started_at TEXT NOT NULL,
+          ended_at TEXT NOT NULL,
+          duration_sec INTEGER NOT NULL,
+          active_sec INTEGER NOT NULL,
+          input_tokens INTEGER,
+          output_tokens INTEGER,
+          cache_read_tokens INTEGER,
+          cache_write_tokens INTEGER,
+          reasoning_tokens INTEGER,
+          cost_usd REAL,
+          estimated INTEGER NOT NULL DEFAULT 0,
+          turns INTEGER NOT NULL,
+          last_event_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          parent_session_id TEXT,
+          PRIMARY KEY (tool, session_id)
+        );
+        INSERT INTO sessions_new SELECT tool, session_id, log_path, project, model,
+          started_at, ended_at, duration_sec, active_sec,
+          input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
+          cost_usd, estimated, turns, last_event_at, updated_at, parent_session_id
+          FROM sessions;
+        DROP TABLE sessions;
+        ALTER TABLE sessions_new RENAME TO sessions;
+        CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at);
+        CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
+        -- One-time backfill: NULL out fields that the source logs never record
+        -- (previously stored as 0).
+        UPDATE sessions SET reasoning_tokens = NULL WHERE tool = 'claude';
+        UPDATE sessions SET cache_write_tokens = NULL WHERE tool = 'codex';
+        UPDATE sessions SET cache_write_tokens = NULL, reasoning_tokens = NULL WHERE tool = 'copilot';
+        UPDATE sessions SET cache_read_tokens = NULL WHERE tool = 'copilot' AND parent_session_id IS NULL;
+        UPDATE sessions SET input_tokens = NULL, cache_read_tokens = NULL,
+          cache_write_tokens = NULL, reasoning_tokens = NULL WHERE tool = 'copilot-cli';
+        COMMIT;
+      `);
     }
   }
 

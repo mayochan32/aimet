@@ -22,6 +22,11 @@ export function fmtTokens(n: number): string {
   return String(n);
 }
 
+/** Token cell renderer: null/undefined = "not recorded" -> '-'. */
+export function tok(v: unknown): string {
+  return v == null ? '-' : fmtTokens(Number(v));
+}
+
 export function fmtHours(sec: number): string {
   return (sec / 3600).toFixed(2) + 'h';
 }
@@ -89,10 +94,10 @@ export function report(store: Store, opts: ReportOpts = {}): string {
     String(r.turns),
     fmtHours(num(r.active_sec)),
     fmtHours(num(r.duration_sec)),
-    fmtTokens(num(r.input)),
-    fmtTokens(num(r.output)),
-    fmtTokens(num(r.cache_read)),
-    fmtTokens(num(r.cache_write)),
+    tok(r.input),
+    tok(r.output),
+    tok(r.cache_read),
+    tok(r.cache_write),
     r.cost_usd == null ? '-' : num(r.cost_usd).toFixed(2) + (num(r.estimated) ? '*' : ''),
   ]);
 
@@ -170,11 +175,11 @@ export function sessionSummary(store: Store, opts: { tool?: string; id?: string 
         ...kidRows.map(
           (k) =>
             `  - ${String(k.session_id).slice(0, 24)}  ${String(k.model)}  ` +
-            `turns ${k.turns} / in ${fmtTokens(num(k.input_tokens))} / out ${fmtTokens(num(k.output_tokens))} / ` +
-            `cacheR ${fmtTokens(num(k.cache_read_tokens))} / ` +
+            `turns ${k.turns} / in ${tok(k.input_tokens)} / out ${tok(k.output_tokens)} / ` +
+            `cacheR ${tok(k.cache_read_tokens)} / ` +
             `${k.cost_usd == null ? 'cost n/a' : '$' + num(k.cost_usd).toFixed(4) + (num(k.estimated) ? '*' : '')}`
         ),
-        `subagents total: turns ${kids.turns} / in ${fmtTokens(num(kids.input))} / out ${fmtTokens(num(kids.output))} / cacheR ${fmtTokens(num(kids.cache_read))} / cost +$${num(kids.cost_usd).toFixed(4)} (API-equivalent, estimated)` +
+        `subagents total: turns ${kids.turns} / in ${tok(kids.input)} / out ${tok(kids.output)} / cacheR ${tok(kids.cache_read)} / cost +$${num(kids.cost_usd).toFixed(4)} (API-equivalent, estimated)` +
           (kidRows.some((k) => k.cost_usd == null)
             ? ` ※${kidRows.filter((k) => k.cost_usd == null).length}件は単価不明(n/a)で合算に含まれず`
             : ''),
@@ -189,7 +194,7 @@ export function sessionSummary(store: Store, opts: { tool?: string; id?: string 
     `model   : ${r.model}`,
     `time    : ${r.started_at} -> ${r.ended_at} (active ${fmtHours(num(r.active_sec))} / wall ${fmtHours(num(r.duration_sec))})`,
     `turns   : ${r.turns}`,
-    `tokens  : in ${fmtTokens(num(r.input_tokens))} / out ${fmtTokens(num(r.output_tokens))} / cacheR ${fmtTokens(num(r.cache_read_tokens))} / cacheW ${fmtTokens(num(r.cache_write_tokens))}`,
+    `tokens  : in ${tok(r.input_tokens)} / out ${tok(r.output_tokens)} / cacheR ${tok(r.cache_read_tokens)} / cacheW ${tok(r.cache_write_tokens)}`,
     `cost    : ${r.cost_usd == null ? noCostLabel(r) : '$' + num(r.cost_usd).toFixed(4) + costLabel(r)}`,
     ...kidLines,
     '',

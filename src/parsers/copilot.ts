@@ -106,7 +106,9 @@ export const copilotParser: Parser = {
     const requests = (s.requests as Record<string, unknown>[]) ?? [];
     if (!Array.isArray(requests) || requests.length === 0) return null;
 
-    const tokens: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
+    // Copilot Chat logs record prompt/completion tokens only; cache and
+    // reasoning breakdowns are not recorded -> null.
+    const tokens: TokenUsage = { input: 0, output: 0, cacheRead: null, cacheWrite: null, reasoning: null };
     const timestamps: number[] = [];
     let model = '';
     let credits = 0;
@@ -114,8 +116,8 @@ export const copilotParser: Parser = {
 
     for (const r of requests) {
       if (typeof r.timestamp === 'number') timestamps.push(r.timestamp);
-      tokens.input += Number(r.promptTokens ?? 0);
-      tokens.output += Number(r.completionTokens ?? 0);
+      tokens.input = (tokens.input ?? 0) + Number(r.promptTokens ?? 0);
+      tokens.output = (tokens.output ?? 0) + Number(r.completionTokens ?? 0);
       credits += Number(r.copilotCredits ?? 0);
       if (typeof r.elapsedMs === 'number') activeMs += r.elapsedMs;
       const md = ((r.result as Record<string, unknown>)?.metadata ?? {}) as Record<string, unknown>;

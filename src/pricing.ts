@@ -74,7 +74,12 @@ export function costUsd(model: string, t: TokenUsage): number | null {
     .sort((a, b) => b.length - a.length)[0];
   if (!key) return null;
   const [inP, outP, crP, cwP] = table[key];
+  // null token fields mean "not recorded by the log" -> contribute 0 here.
   return (
-    (t.input * inP + t.output * outP + t.cacheRead * crP + t.cacheWrite * cwP) / 1e6
+    ((t.input ?? 0) * inP +
+      (t.output ?? 0) * outP +
+      (t.cacheRead ?? 0) * crP +
+      (t.cacheWrite ?? 0) * cwP) /
+    1e6
   );
 }

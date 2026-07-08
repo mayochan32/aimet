@@ -20,7 +20,8 @@ export const claudeParser: Parser = {
   },
 
   async parseFile(path: string): Promise<SessionMetrics | null> {
-    const tokens: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
+    // Anthropic logs do not report reasoning tokens separately -> null (= not recorded).
+    const tokens: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: null };
     const timestamps: string[] = [];
     const seenMsgIds = new Set<string>();
     let sessionId = '';
@@ -51,10 +52,10 @@ export const claudeParser: Parser = {
       turns++;
       const u = msg.usage as Record<string, number> | undefined;
       if (!u) continue;
-      tokens.input += u.input_tokens ?? 0;
-      tokens.output += u.output_tokens ?? 0;
-      tokens.cacheRead += u.cache_read_input_tokens ?? 0;
-      tokens.cacheWrite += u.cache_creation_input_tokens ?? 0;
+      tokens.input = (tokens.input ?? 0) + (u.input_tokens ?? 0);
+      tokens.output = (tokens.output ?? 0) + (u.output_tokens ?? 0);
+      tokens.cacheRead = (tokens.cacheRead ?? 0) + (u.cache_read_input_tokens ?? 0);
+      tokens.cacheWrite = (tokens.cacheWrite ?? 0) + (u.cache_creation_input_tokens ?? 0);
       const cc = (u as Record<string, unknown>).cache_creation as
         | Record<string, number>
         | undefined;

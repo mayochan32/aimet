@@ -107,10 +107,11 @@ test('copilot-cli: sums output tokens, counts turns, leaves input/cost unknown',
   assert.equal(m.model, 'gpt-5.4');
   assert.equal(m.turns, 2, 'two assistant.turn_start');
   assert.equal(m.tokens.output, 350, '100 + 250 (corrupt line skipped)');
-  // Copilot CLI does not record input/cache tokens.
-  assert.equal(m.tokens.input, 0);
-  assert.equal(m.tokens.cacheRead, 0);
-  assert.equal(m.tokens.cacheWrite, 0);
+  // Copilot CLI does not record input/cache tokens -> null (not a measured 0).
+  assert.equal(m.tokens.input, null);
+  assert.equal(m.tokens.cacheRead, null);
+  assert.equal(m.tokens.cacheWrite, null);
+  assert.equal(m.tokens.reasoning, null);
   // Input unknown -> no meaningful API-equivalent cost.
   assert.equal(m.costUsd, null, 'cost must be null, not a misleading output-only figure');
 });

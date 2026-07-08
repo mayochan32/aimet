@@ -65,12 +65,13 @@ export const copilotCliParser: Parser = {
     const first = timestamps[0];
     const last = timestamps[timestamps.length - 1];
 
+    // Copilot CLI records output tokens ONLY; everything else -> null (not recorded).
     const tokens: TokenUsage = {
-      input: 0, // not recorded by Copilot CLI
+      input: null,
       output,
-      cacheRead: 0,
-      cacheWrite: 0,
-      reasoning: 0,
+      cacheRead: null,
+      cacheWrite: null,
+      reasoning: null,
     };
 
     return {

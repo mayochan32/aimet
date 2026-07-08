@@ -2,13 +2,23 @@
 
 export type Tool = 'claude' | 'codex' | 'copilot' | 'copilot-cli';
 
+/**
+ * Token counts. `null` means "the tool's log does NOT record this value"
+ * (rendered as `-`), as opposed to a measured 0.
+ * Availability by tool:
+ *   claude:           in/out/cacheR/cacheW measured, reasoning null
+ *   codex:            in/out/cacheR/reasoning measured, cacheW null (no such billing)
+ *   copilot (chat):   in/out measured, cacheR/cacheW/reasoning null
+ *   copilot subagent: in/out/cacheR measured, cacheW/reasoning null
+ *   copilot-cli:      out measured, everything else null
+ */
 export interface TokenUsage {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
+  input: number | null;
+  output: number | null;
+  cacheRead: number | null;
+  cacheWrite: number | null;
   /** reasoning tokens (Codex); included in output */
-  reasoning: number;
+  reasoning: number | null;
 }
 
 export interface SessionMetrics {

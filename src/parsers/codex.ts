@@ -81,7 +81,7 @@ export const codexParser: Parser = {
       input: Math.max(0, (best.input_tokens ?? 0) - cached),
       output: best.output_tokens ?? 0,
       cacheRead: cached,
-      cacheWrite: 0,
+      cacheWrite: null, // OpenAI has no cache-write billing/recording -> not recorded
       reasoning: best.reasoning_output_tokens ?? 0,
     };
 

@@ -43,7 +43,8 @@ export const copilotSubagentParser: Parser = {
   },
 
   async parseFile(path: string): Promise<SessionMetrics | null> {
-    const tokens: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
+    // Span traces record in/cached/out; cache-write and reasoning are not recorded -> null.
+    const tokens: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: null, reasoning: null };
     let sessionId = '';
     let parentSessionId: string | null = null;
     let label = '';
@@ -76,9 +77,9 @@ export const copilotSubagentParser: Parser = {
           requests++;
           const cached = Number(attrs.cachedTokens ?? 0);
           // inputTokens includes cachedTokens (OpenAI-style); split them.
-          tokens.input += Math.max(0, Number(attrs.inputTokens ?? 0) - cached);
-          tokens.cacheRead += cached;
-          tokens.output += Number(attrs.outputTokens ?? 0);
+          tokens.input = (tokens.input ?? 0) + Math.max(0, Number(attrs.inputTokens ?? 0) - cached);
+          tokens.cacheRead = (tokens.cacheRead ?? 0) + cached;
+          tokens.output = (tokens.output ?? 0) + Number(attrs.outputTokens ?? 0);
           if (typeof attrs.model === 'string') model = attrs.model;
           if (Number.isFinite(dur)) activeMs += dur;
           break;
