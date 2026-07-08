@@ -149,7 +149,11 @@ export function report(store: Store, opts: ReportOpts = {}): string {
 /** Cost semantics differ per tool: see README "コスト計算の仕組み". */
 export function costLabel(r: Record<string, unknown>): string {
   if (r.tool === 'copilot') {
-    return num(r.estimated) ? ' (API-equivalent, estimated)' : ' (actual, Copilot credits)';
+    // Actual spend: also show the raw credit amount (1 credit = $0.01 fixed),
+    // since Copilot budgets/dashboards are denominated in credits.
+    return num(r.estimated)
+      ? ' (API-equivalent, estimated)'
+      : ` (actual, ${(num(r.cost_usd) * 100).toFixed(2)} Copilot credits)`;
   }
   return ' (API-equivalent)';
 }
