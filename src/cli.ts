@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { Store } from './store.js';
 import { collect, ingestFile } from './collect.js';
 import { writeFileSync } from 'node:fs';
-import { report, reportRows, sessionSummary, sessionRow } from './report.js';
+import { report, reportRows, sessionSummary, sessionRow, childrenRows } from './report.js';
 import { reportMd, sessionMd, detailMd } from './markdown.js';
 import { parserFor } from './parsers/index.js';
 import { initTool } from './init.js';
@@ -100,7 +100,7 @@ async function main(): Promise<void> {
           console.error('Session not found.');
           process.exit(1);
         }
-        writeFileSync(values.md, sessionMd(r));
+        writeFileSync(values.md, sessionMd(r, childrenRows(store, r.session_id)));
         console.log(`wrote ${values.md}`);
       } else {
         console.log(sessionSummary(store, { tool: values.tool, id: values.id }));

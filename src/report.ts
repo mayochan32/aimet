@@ -150,14 +150,31 @@ export function childrenRollup(
   return rows.length && Number(rows[0].n) > 0 ? rows[0] : null;
 }
 
+/** Child (subagent) session rows for a parent, newest first. */
+export function childrenRows(store: Store, sessionId: unknown): Record<string, unknown>[] {
+  return store.query(
+    `SELECT * FROM sessions WHERE parent_session_id = ? ORDER BY started_at`,
+    sessionId
+  );
+}
+
 /** Human summary for one session (used by `aimet session` / skills). */
 export function sessionSummary(store: Store, opts: { tool?: string; id?: string }): string {
   const r = sessionRow(store, opts);
   if (!r) return 'Session not found.';
   const kids = childrenRollup(store, r.session_id);
+  const kidRows = kids ? childrenRows(store, r.session_id) : [];
   const kidLines = kids
     ? [
-        `subagents: ${kids.n} sessions / turns ${kids.turns} / in ${fmtTokens(num(kids.input))} / out ${fmtTokens(num(kids.output))} / cacheR ${fmtTokens(num(kids.cache_read))} / cost +$${num(kids.cost_usd).toFixed(4)} (API-equivalent, estimated)`,
+        `subagents (${kids.n}):`,
+        ...kidRows.map(
+          (k) =>
+            `  - ${String(k.session_id).slice(0, 24)}  ${String(k.model)}  ` +
+            `turns ${k.turns} / in ${fmtTokens(num(k.input_tokens))} / out ${fmtTokens(num(k.output_tokens))} / ` +
+            `cacheR ${fmtTokens(num(k.cache_read_tokens))} / ` +
+            `${k.cost_usd == null ? 'cost n/a' : '$' + num(k.cost_usd).toFixed(4) + (num(k.estimated) ? '*' : '')}`
+        ),
+        `subagents total: turns ${kids.turns} / in ${fmtTokens(num(kids.input))} / out ${fmtTokens(num(kids.output))} / cacheR ${fmtTokens(num(kids.cache_read))} / cost +$${num(kids.cost_usd).toFixed(4)} (API-equivalent, estimated)`,
         `TOTAL(with subagents): cost $${(num(r.cost_usd) + num(kids.cost_usd)).toFixed(4)}`,
       ]
     : [];

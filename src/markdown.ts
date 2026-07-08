@@ -71,7 +71,32 @@ export function reportMd(
   ].join('\n');
 }
 
-export function sessionMd(r: Record<string, unknown>): string {
+export function sessionMd(
+  r: Record<string, unknown>,
+  children: Record<string, unknown>[] = []
+): string {
+  const childSection = children.length
+    ? [
+        '## Subagents',
+        '',
+        table(
+          ['session', 'model', 'turns', 'in', 'out', 'cacheR', 'active', 'cost($)'],
+          children.map((k) => [
+            String(k.session_id),
+            String(k.model),
+            String(k.turns),
+            fmtTokens(num(k.input_tokens)),
+            fmtTokens(num(k.output_tokens)),
+            fmtTokens(num(k.cache_read_tokens)),
+            fmtHours(num(k.active_sec)),
+            k.cost_usd == null ? '-' : num(k.cost_usd).toFixed(4) + (num(k.estimated) ? ' *' : ''),
+          ])
+        ),
+        '',
+        `**TOTAL (parent + subagents)**: $${(num(r.cost_usd) + children.reduce((s, k) => s + num(k.cost_usd), 0)).toFixed(4)}（子はAPI換算推定 \`*\`）`,
+        '',
+      ]
+    : [];
   return [
     `# Session ${r.session_id}`,
     '',
@@ -79,6 +104,7 @@ export function sessionMd(r: Record<string, unknown>): string {
       ['item', 'value'],
       [
         ['tool', String(r.tool)],
+        ...(r.parent_session_id ? [['parent session', String(r.parent_session_id)] as [string, string]] : []),
         ['project', String(r.project)],
         ['model', String(r.model)],
         ['started', fmtLocal(r.started_at)],
@@ -95,6 +121,7 @@ export function sessionMd(r: Record<string, unknown>): string {
       ]
     ),
     '',
+    ...childSection,
   ].join('\n');
 }
 
