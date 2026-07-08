@@ -507,6 +507,106 @@ cost = ( input × 入力単価
 - **推定値フラグ**: ログから実測できない値は `estimated` フラグ付きで区別します。
 - **ストリームパース**: ログは1ファイル数MBになるため逐次読みで処理します。未知のフィールド・イベント種別は無視し、ツールのバージョンアップに寛容です。
 
+## 代表的なコマンドの実行例
+
+実際のセッションログに対して実行した例です（値は実測、パスの一部は編集済み）。
+
+### 取り込み → 日次サマリー
+
+```console
+$ aimet collect
+scanned 23 files: +6 new, ~1 updated, 16 unchanged, 0 errors
+
+$ aimet report --by tool
+    period     tool  sess  turns  active    wall      in     out  cacheR  cacheW  cost($)
+----------  -------  ----  -----  ------  ------  ------  ------  ------  ------  -------
+2026-07-07    codex     2     32   1.47h   2.19h   1.07M   99.6k  20.54M       -     4.85
+2026-07-07  copilot     4     25   0.05h   0.05h  122.1k   21.7k  415.2k       -    0.08*
+2026-07-05  copilot     1      1   0.01h   0.02h   31.3k    1.6k       -       -     0.06
+2026-06-19   claude     1     13   0.26h   0.55h      29    3.9k  292.8k   17.4k     0.25
+
+( * = includes estimated values | cost: claude/codex = API-equivalent USD, copilot = actual credit spend )
+```
+
+`-` は「そのツールのログに記録が存在しない」ことを示します（0とは区別されます）。
+
+### 期間・ツールを絞った集計
+
+```console
+$ aimet report --tool codex --period weekly          # Codexだけを週次で
+$ aimet report --by project --since 7                # 直近7日をプロジェクト別に
+$ aimet report --start 20260705 --end 20260706       # 7/5〜7/6（ローカル時刻）
+$ aimet report --start 2026070705 --end 2026070706   # 7/7の5〜6時台だけ
+$ aimet report --by model --json > tokens.json       # 生値JSONでBI連携
+$ aimet report --by tool --md report.md              # Markdownでファイル出力
+```
+
+### セッションの深掘り（マルチエージェントのグループビュー）
+
+```console
+$ aimet session --id 1eaf50d0      # Copilotの親セッション（IDは前方一致）
+session : copilot 1eaf50d0-5520-4edd-a299-70a092c74135
+project : /Users/mayo/dev/myproject
+model   : gpt-5.4-mini
+time    : 2026-07-06T21:30:00.000Z -> 2026-07-06T21:45:00.000Z (active 0.15h / wall 0.25h)
+turns   : 51
+tokens  : in 152.0k / out 9.8k / cacheR 480.0k / cacheW -
+cost    : $9.8002 (actual, 980.02 Copilot credits)
+subagents (4):
+  - call_6NQTrjpkvnZtQ38xK5C  gpt-5.4-mini (runSubagent-Explore)  turns 5 / in 18.4k / out 3.4k / cacheR 64.5k / $0.0131*
+  - call_TZannU0cILOhE5Eg0Jl  gpt-5.4-mini (runSubagent-Explore)  turns 6 / in 17.6k / out 5.6k / cacheR 119.8k / $0.0187*
+  - call_jwW3xYiu5uEGIZqH1nZ  gpt-5.4-mini (runSubagent-Explore)  turns 7 / in 57.0k / out 4.9k / cacheR 109.6k / $0.0267*
+  - call_YdPfBC5yLYyXpNOg8G2  gpt-5.4-mini (runSubagent-Explore)  turns 7 / in 29.1k / out 7.7k / cacheR 121.3k / $0.0257*
+subagents total: turns 25 / in 122.1k / out 21.7k / cacheR 415.2k / cost +$0.0842 (API-equivalent, estimated)
+TOTAL(with subagents): cost $9.8844
+```
+
+```console
+$ aimet session --id call_TZ       # 子セッション単体。parent行で親に遡れる
+session : copilot call_TZannU0cILOhE5Eg0JlVpC14
+parent  : 1eaf50d0-5520-4edd-a299-70a092c74135
+model   : gpt-5.4-mini (runSubagent-Explore)
+tokens  : in 17.6k / out 5.6k / cacheR 119.8k / cacheW -
+cost    : $0.0187 (API-equivalent, estimated)
+```
+
+Codexのマルチエージェントも同様に親子で表示されます：
+
+```console
+$ aimet session --id 019f392e      # Codexの親セッション
+session : codex 019f392e-fe29-7150-841a-6a97512b932e
+model   : gpt-5.5
+tokens  : in 1.05M / out 98.7k / cacheR 20.45M / cacheW -
+cost    : $4.8534 (API-equivalent)
+subagents (1):
+  - 019f3930-4586-7013-bf2d-  codex-auto-review (subagent:guardian)  turns 6 / in 25.4k / out 867 / cacheR 85.9k / cost n/a
+```
+
+### 全記録のダンプ（ログ解析・監査用）
+
+```console
+$ aimet detail --tool codex                    # 最新セッションの全記録をJSONで
+$ aimet detail --id call_6NQ --md detail.md    # サブエージェントをMarkdownで
+$ aimet detail --tool codex --raw | jq '.tokenTimeline[-1].rate_limits'
+{
+  "primary":   { "used_percent": 7,  "window_minutes": 300 },
+  "secondary": { "used_percent": 28, "window_minutes": 10080 },
+  "plan_type": "plus"
+}
+```
+
+### 開発環境への組み込み
+
+```console
+$ aimet init claude --dry-run      # 書き込み内容を事前確認
+[dry-run] would write ~/.claude/settings.json
+[dry-run] would write ~/.claude/commands/metrics.md
+
+$ aimet init claude
+wrote ~/.claude/settings.json
+wrote ~/.claude/commands/metrics.md
+```
+
 ## 出力サンプル
 
 実際のセッションログから生成した各出力レベルのサンプルを [`examples/`](examples/) に置いています。
