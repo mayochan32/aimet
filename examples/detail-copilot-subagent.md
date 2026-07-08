@@ -1,6 +1,6 @@
 # Session Detail (copilot)
 
-Log: `<log-dir>/runSubagent-Explore-call_6NQTrjpkvnZtQ38xK5CmmbNX.jsonl`
+Log: `<log-dir>/debug-logs/runSubagent-Explore-call_6NQTrjpkvnZtQ38xK5CmmbNX.jsonl`
 
 ## Meta
 
