@@ -114,7 +114,12 @@ export const copilotParser: Parser = {
     let credits = 0;
     let activeMs = 0;
 
+    let turns = 0;
     for (const r of requests) {
+      // The incremental log addresses requests by index; a removed/edited
+      // request can leave a hole (undefined) in the reconstructed array.
+      if (!r || typeof r !== 'object') continue;
+      turns++;
       if (typeof r.timestamp === 'number') timestamps.push(r.timestamp);
       tokens.input = (tokens.input ?? 0) + Number(r.promptTokens ?? 0);
       tokens.output = (tokens.output ?? 0) + Number(r.completionTokens ?? 0);
@@ -126,6 +131,7 @@ export const copilotParser: Parser = {
       const done = (r.modelState as Record<string, number>)?.completedAt;
       if (typeof done === 'number') timestamps.push(done);
     }
+    if (turns === 0) return null; // every request slot was a hole
     if (typeof s.creationDate === 'number') timestamps.unshift(s.creationDate);
     if (timestamps.length === 0) return null;
     timestamps.sort((a, b) => a - b);
@@ -147,7 +153,7 @@ export const copilotParser: Parser = {
       // otherwise API-equivalent estimate by resolved model.
       costUsd: credits > 0 ? credits * 0.01 : costUsd(model, tokens),
       estimated: credits > 0 ? false : true,
-      turns: requests.length,
+      turns,
       lastEventAt: iso(last),
     };
   },

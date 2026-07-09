@@ -47,6 +47,7 @@ test('pricing: invalid user entries are ignored, defaults preserved', async () =
     })
   );
   process.env.HOME = home;
+  process.env.USERPROFILE = home; // homedir() uses USERPROFILE on Windows
   const { pricingTable, costUsd } = await import('../dist/pricing.js');
   const t = pricingTable();
   assert.deepEqual(t['my-model'], [1, 2, 0.1, 0], 'valid override accepted');
@@ -61,6 +62,7 @@ test('init: refuses to overwrite an invalid config file', async () => {
   const broken = '{ not valid json, // comment\n';
   writeFileSync(settings, broken);
   process.env.HOME = home;
+  process.env.USERPROFILE = home; // homedir() uses USERPROFILE on Windows
   const { initTool } = await import('../dist/init.js');
   assert.throws(() => initTool('claude', false), /not valid JSON/);
   assert.equal(readFileSync(settings, 'utf8'), broken, 'file must be left untouched');

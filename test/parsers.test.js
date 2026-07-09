@@ -65,6 +65,16 @@ test('copilot: reduces incremental diffs and prefers actual credit cost', async 
   assert.equal(m.costUsd, 0.05, '5 credits x $0.01');
 });
 
+test('copilot: tolerates holes in requests[] (index-addressed incremental log)', async () => {
+  // requests[1] is never written -> sparse array with an undefined hole.
+  const m = await copilotParser.parseFile(fx('copilot-sparse.jsonl'));
+  assert.ok(m, 'must not throw on sparse requests');
+  assert.equal(m.turns, 2, 'holes are not counted as turns');
+  assert.equal(m.tokens.input, 800);
+  assert.equal(m.tokens.output, 150);
+  assert.equal(m.costUsd, 0.04, '(2.5 + 1.5) credits x $0.01');
+});
+
 test('codex subagent (multi-agent v2): keys by own thread id and links parent', async () => {
   const m = await codexParser.parseFile(fx('codex-subagent-basic.jsonl'));
   assert.ok(m);
