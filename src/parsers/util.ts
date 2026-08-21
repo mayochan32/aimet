@@ -8,7 +8,11 @@ export async function* jsonlRecords(path: string): AsyncGenerator<Record<string,
     input: createReadStream(path, { encoding: 'utf8' }),
     crlfDelay: Infinity,
   });
-  for await (const line of rl) {
+  let first = true;
+  for await (const rawLine of rl) {
+    // Some Windows tools prepend a UTF-8 BOM. JSON.parse does not accept it.
+    const line = first ? rawLine.replace(/^\uFEFF/, '') : rawLine;
+    first = false;
     if (!line.trim()) continue;
     try {
       yield JSON.parse(line) as Record<string, unknown>;

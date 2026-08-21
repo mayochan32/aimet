@@ -1,0 +1,2 @@
+{"v":1,"ts":1783373858000,"dur":0,"sid":"golden-child-2","type":"session_start","spanId":"start-2","attrs":{"parentSessionId":"golden-parent-1eaf50d0","label":"runSubagent-Explore"}}
+{"v":1,"ts":1783373858817,"dur":1000,"sid":"golden-child-2","type":"llm_request","spanId":"usage-2","attrs":{"inputTokens":137407,"cachedTokens":119808,"outputTokens":5648,"copilotUsageNanoAiu":4284076500,"model":"gpt-5.4-mini"}}

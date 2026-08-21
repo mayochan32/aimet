@@ -75,6 +75,35 @@ test('copilot: tolerates holes in requests[] (index-addressed incremental log)',
   assert.equal(m.costUsd, 0.04, '(2.5 + 1.5) credits x $0.01');
 });
 
+test('copilot: Push appends requests instead of replacing completed requests', async () => {
+  const m = await copilotParser.parseFile(fx('copilot-sequential-push.jsonl'));
+  assert.ok(m);
+  assert.equal(m.turns, 2);
+  assert.equal(m.tokens.input, 3000);
+  assert.equal(m.tokens.output, 300);
+  assert.equal(m.costUsd, 0.04);
+  assert.equal(m.costSource, 'actual');
+  assert.equal(m.metricScope, 'own');
+});
+
+test('copilot: Delete removes an ObjectMutationLog request', async () => {
+  const { writeFileSync, mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const path = join(mkdtempSync(join(tmpdir(), 'aimet-delete-')), 'session.jsonl');
+  writeFileSync(path, [
+    { kind: 0, v: { sessionId: 'delete-session', creationDate: 1000, requests: [
+      { timestamp: 1000, promptTokens: 10, completionTokens: 1, copilotCredits: 0.1 },
+      { timestamp: 2000, promptTokens: 20, completionTokens: 2, copilotCredits: 0.2 },
+    ] } },
+    { kind: 3, k: ['requests', 0] },
+  ].map(JSON.stringify).join('\n'));
+  const m = await copilotParser.parseFile(path);
+  assert.ok(m);
+  assert.equal(m.turns, 1);
+  assert.equal(m.tokens.input, 20);
+  assert.equal(m.costUsd, 0.002);
+});
+
 test('codex subagent (multi-agent v2): keys by own thread id and links parent', async () => {
   const m = await codexParser.parseFile(fx('codex-subagent-basic.jsonl'));
   assert.ok(m);
@@ -102,10 +131,48 @@ test('copilot subagent: parses span traces, splits cached input, links parent', 
   assert.ok(m.costUsd > 0);
 });
 
-test('copilot subagent: rejects non-subagent span files via isLogFile', () => {
-  assert.equal(copilotSubagentParser.isLogFile('/x/debug-logs/u/main.jsonl'), false);
+test('copilot subagent: exact AIU wins, zero AIU is actual, duplicate span is ignored', async () => {
+  const m = await copilotSubagentParser.parseFile(fx('copilot-subagent-actual.jsonl'));
+  assert.ok(m);
+  assert.equal(m.parentSessionId, 'parent_actual');
+  assert.equal(m.turns, 3, 'unique LLM requests when turn_start is absent');
+  assert.equal(m.tokens.input, 80 + 40 + 30);
+  assert.equal(m.tokens.cacheRead, 20 + 10);
+  assert.equal(m.tokens.output, 20 + 10 + 5);
+  assert.equal(m.costUsd, 0.0075);
+  assert.equal(m.estimated, false);
+  assert.equal(m.costSource, 'actual');
+  assert.equal(m.metricScope, 'own');
+});
+
+test('copilot subagent: combines exact AIU with per-request fallback as mixed', async () => {
+  const m = await copilotSubagentParser.parseFile(fx('copilot-subagent-mixed.jsonl'));
+  assert.ok(m);
+  // exact: 0.5 AIC * $0.01; fallback: 100 in, 30 out, 100 cached at gpt-5.2 rates
+  const fallback = (100 * 1.75 + 30 * 14 + 100 * 0.175) / 1e6;
+  assert.equal(m.costUsd, 0.005 + fallback);
+  assert.equal(m.estimated, true);
+  assert.equal(m.costSource, 'mixed');
+});
+
+test('copilot subagent: rejects unrelated span files via isLogFile', () => {
+  assert.equal(copilotSubagentParser.isLogFile('/x/GitHub.copilot-chat/debug-logs/u/main.jsonl'), true);
   assert.equal(copilotSubagentParser.isLogFile('/x/debug-logs/u/title-a.jsonl'), false);
-  assert.equal(copilotSubagentParser.isLogFile('/x/debug-logs/u/runSubagent-Explore-call_1.jsonl'), true);
+  assert.equal(copilotSubagentParser.isLogFile('/x/GitHub.copilot-chat/debug-logs/u/runSubagent-Explore-call_1.jsonl'), true);
+  assert.equal(copilotSubagentParser.isLogFile('/other/debug-logs/u/main.jsonl'), false);
+});
+
+test('copilot parent main span is exact and own-scoped', async () => {
+  const m = await copilotSubagentParser.parseFile(fx('copilot-debug/main.jsonl'));
+  assert.ok(m);
+  assert.equal(m.sessionId, 'parent-session-1');
+  assert.equal(m.parentSessionId, null);
+  assert.equal(m.tokens.input, 600);
+  assert.equal(m.tokens.cacheRead, 400);
+  assert.equal(m.tokens.output, 100);
+  assert.equal(m.costUsd, 0.0125);
+  assert.equal(m.costSource, 'actual');
+  assert.equal(m.metricScope, 'own');
 });
 
 test('copilot-cli: sums output tokens, counts turns, leaves input/cost unknown', async () => {

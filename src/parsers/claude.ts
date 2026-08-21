@@ -68,7 +68,7 @@ export const claudeParser: Parser = {
     const first = timestamps[0];
     const last = timestamps[timestamps.length - 1];
     // Fall back: recover project path from the dashed directory name.
-    const project = cwd || dirname(path).split('/').pop()!.replace(/^-/, '/').replace(/-/g, '/');
+    const project = cwd || basename(dirname(path)).replace(/^-/, '/').replace(/-/g, '/');
 
     return {
       tool: 'claude',

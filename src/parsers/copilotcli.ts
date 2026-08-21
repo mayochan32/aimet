@@ -89,6 +89,8 @@ export const copilotCliParser: Parser = {
       // computed. Report null rather than a misleading output-only figure.
       costUsd: null,
       estimated: false, // the output tokens we do report are measured, not guessed
+      metricScope: 'tree',
+      costSource: 'estimated',
       turns,
       lastEventAt: last,
     };

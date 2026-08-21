@@ -41,6 +41,10 @@ export interface SessionMetrics {
   costUsd: number | null;
   /** true when tokens are estimated rather than read from the log */
   estimated: boolean;
+  /** whether this row measures only itself or already includes descendants */
+  metricScope?: 'own' | 'tree';
+  /** origin of the monetary value, independent of token measurement */
+  costSource?: 'actual' | 'estimated' | 'mixed';
   /** number of assistant turns / tasks observed */
   turns: number;
   /** ISO timestamp of the last event ingested (for idempotent upsert) */
@@ -54,7 +58,7 @@ export const GAP_THRESHOLD_MS = 5 * 60 * 1000;
 
 export interface Parser {
   tool: Tool;
-  /** default log locations to scan, relative to $HOME */
+  /** default log locations to scan, absolute or relative to $HOME */
   defaultDirs(): string[];
   /** glob-ish predicate for candidate log files */
   isLogFile(path: string): boolean;

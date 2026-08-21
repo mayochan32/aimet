@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, copyFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { vscodeUserDirs } from './paths.js';
 
 const HOOK_CMD = (tool: string) => `aimet hook ${tool}`;
 
@@ -125,11 +126,7 @@ export function initCopilot(dryRun: boolean): string {
   }
 
   // /metrics prompt file into every VS Code user-data dir that exists.
-  const userDirs = [
-    join(homedir(), 'Library', 'Application Support', 'Code', 'User'), // macOS
-    join(homedir(), '.config', 'Code', 'User'), // Linux
-    join(homedir(), 'AppData', 'Roaming', 'Code', 'User'), // Windows
-  ].filter((d) => existsSync(d));
+  const userDirs = vscodeUserDirs().filter((d) => existsSync(d));
   const prompt = [
     '---',
     'description: Show AI usage metrics for my Copilot sessions',

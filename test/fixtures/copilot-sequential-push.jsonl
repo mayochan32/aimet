@@ -1,0 +1,9 @@
+{"kind":0,"v":{"sessionId":"sess-cop-push","creationDate":1783000000000,"requests":[]}}
+{"kind":2,"k":["requests"],"v":[{"requestId":"request_a","timestamp":1783000001000}]}
+{"kind":1,"k":["requests",0,"promptTokens"],"v":1000}
+{"kind":1,"k":["requests",0,"completionTokens"],"v":100}
+{"kind":1,"k":["requests",0,"copilotCredits"],"v":1.5}
+{"kind":2,"k":["requests"],"v":[{"requestId":"request_b","timestamp":1783000002000}]}
+{"kind":1,"k":["requests",1,"promptTokens"],"v":2000}
+{"kind":1,"k":["requests",1,"completionTokens"],"v":200}
+{"kind":1,"k":["requests",1,"copilotCredits"],"v":2.5}

@@ -1,0 +1,5 @@
+{"v":1,"ts":1783000000000,"dur":0,"sid":"call_child_actual","type":"session_start","name":"session_start","spanId":"start","attrs":{"parentSessionId":"parent_actual","label":"runSubagent-Explore"}}
+{"v":1,"ts":1783000001000,"dur":2000,"sid":"call_child_actual","type":"llm_request","name":"chat:gpt-5.2-codex","spanId":"req-1","attrs":{"inputTokens":100,"outputTokens":20,"cachedTokens":20,"copilotUsageNanoAiu":500000000,"model":"gpt-5.2-codex"}}
+{"v":1,"ts":1783000001000,"dur":2000,"sid":"call_child_actual","type":"llm_request","name":"duplicate","spanId":"req-1","attrs":{"inputTokens":100,"outputTokens":20,"cachedTokens":20,"copilotUsageNanoAiu":500000000,"model":"gpt-5.2-codex"}}
+{"v":1,"ts":1783000004000,"dur":3000,"sid":"call_child_actual","type":"llm_request","name":"chat:gpt-5.2-codex","spanId":"req-2","attrs":{"usage":{"input_tokens":50,"output_tokens":10,"cached_input_tokens":10},"aiu":0.25,"modelId":"gpt-5.2-codex"}}
+{"v":1,"ts":1783000008000,"dur":1000,"sid":"call_child_actual","type":"llm_request","name":"zero-credit","spanId":"req-3","attrs":{"inputTokens":30,"outputTokens":5,"cachedTokens":0,"copilotUsageNanoAiu":0,"model":"gpt-4o-mini"}}

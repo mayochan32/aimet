@@ -14,26 +14,27 @@
 |---|---|---|---|
 | Claude Code | `~/.claude/projects/**/*.jsonl` | 実測（in / out / cacheR / cacheW、1h/5mキャッシュ内訳） | ✅ |
 | Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl` | 実測（in / cached / out / reasoning）＋レート制限時系列 | ✅ |
-| GitHub Copilot (VS Code Chat) | `<userData>/User/workspaceStorage/<hash>/chatSessions/*.jsonl` | 実測（prompt / completion）＋消費クレジット | ✅ |
-| GitHub Copilot サブエージェント | `<userData>/User/workspaceStorage/<hash>/GitHub.copilot-chat/debug-logs/<親uuid>/runSubagent-*.jsonl` | 実測（in / cached / out、リクエスト単位） | ✅ |
+| GitHub Copilot (VS Code Chat) | `<userData>/User/workspaceStorage/<hash>/chatSessions/*.jsonl` + `debug-logs/<uuid>/main.jsonl` | 実測（in / cached / out）＋消費AI Credits | ✅ |
+| GitHub Copilot サブエージェント | `<userData>/User/workspaceStorage/<hash>/GitHub.copilot-chat/debug-logs/<親uuid>/runSubagent-*.jsonl` | 実測（in / cached / out / AI Credits、リクエスト単位） | ✅ |
 | GitHub Copilot CLI | `~/.copilot/session-state/<uuid>/events.jsonl` | 実測（**出力トークンのみ**） | ✅ |
 
-> Copilot Chat（VS Code）のログの場所（macOS）: `~/Library/Application Support/Code/User/workspaceStorage/`。記録されるのは**Chat/エージェントモードの対話のみ**で、インライン補完は残りません。VS Code Insiders等を使う場合は `aimet collect --dir` でパスを指定してください。
+> Copilot Chat（VS Code）のログはmacOSでは `~/Library/Application Support/Code/User/workspaceStorage/`、Windowsでは `%APPDATA%\Code\User\workspaceStorage` にあります。Stable / Insiders / VSCodiumを自動探索し、非標準パスは `--dir` または `AIMET_COPILOT_DIR`（Windowsは `;`区切り、macOS/Linuxは `:`区切り）で指定できます。記録されるのは**Chat/エージェントモードの対話のみ**です。
 >
-> **Copilot CLI（`@github/copilot`）の注意**: レポート上は `copilot`（Chat版）と区別するため **`copilot-cli`** という別ツールとして集計します。CLIのログは**出力トークンしか記録しない**（入力・キャッシュのフィールドが存在しない）ため、`in` / `cacheR` / `cacheW` は常に0、コストは入力が不明で算出できないため **`-`（null）** になります。取得できるのは出力トークン・実行時間・ターン数・モデル・プロジェクトです。
+> **Copilot CLI（`@github/copilot`）の注意**: レポート上は `copilot`（Chat版）と区別するため **`copilot-cli`** という別ツールとして集計します。CLIのログは**出力トークンしか記録しない**（入力・キャッシュのフィールドが存在しない）ため、`in` / `cacheR` / `cacheW` は **`-`（null）**、コストも **`-`（null）** になります。取得できるのは出力トークン・実行時間・ターン数・モデル・プロジェクトです。
 
 ### マルチエージェント（サブエージェント）の扱い
 
-Copilotの親エージェントが `runSubagent` で子エージェントを起動した場合、**子の消費は `chatSessions/` には記録されません**。子は別ディレクトリ（`GitHub.copilot-chat/debug-logs/<親セッションuuid>/runSubagent-*.jsonl`）に**スパントレース形式**で保存されます。実測ではこの子側が親の数倍のトークンを消費するケースがあり、chatSessionsだけを見るとコストを大幅に過小評価します。
+Copilotの親エージェントが `runSubagent` で子エージェントを起動した場合、親の全LLM呼び出しは `main.jsonl`、子は `runSubagent-*.jsonl` に**スパントレース形式**で保存されます。`chatSessions` の親リクエストは内部の複数LLM呼び出しのトークンを網羅しないため、`main.jsonl` を優先します。
 
 aimetは両方を取り込みます：
 
 - 子セッションは `copilot` ツールの**独立した行**としてDBに入り、`parent_session_id` で親に紐づきます（レポートの合計にも自然に含まれます）
-- `aimet session --id <親ID>` を実行すると、親の値に加えて **`subagents:` 行（子の合算）と `TOTAL(with subagents):`** が表示されます
-- 二重計上の防止: 同ディレクトリの `main.jsonl` は親自身のスパンで chatSessions と重複するため取り込みません（`title-*.jsonl` も対象外）
-- 子のコストはクレジット記録がないため**API換算の推定値**（`estimated` フラグ、表示 `*`）です
+- `aimet session --id <親ID>` を実行すると、親の値に加えて **`subagents:` 行（子の合算）と `TOTAL(parent + N subagents):`** が表示されます
+- 二重計上の防止: 同じ親IDの `main.jsonl` と `chatSessions` がある場合、情報量の多い `main.jsonl` を常に優先し、DBには1行だけ保存します
+- 親と子はどちらも自分自身の呼び出し（`own`）だけを保持し、親子合計では各1回だけ加算します
+- `copilotUsageNanoAiu` / `aiu` がある親・子は**実測AI Credits**を使用し、欠損したリクエストだけAPI単価で推定します
 
-> **前提条件**: debug-logs は Copilot Chat のデバッグファイルロギングが有効な場合にのみ書き出されます（バージョン・実験フラグにより挙動が変わる報告あり）。ログが出ていない環境では子セッションの消費はディスクから回収できません。`find <userData>/User/workspaceStorage -path '*debug-logs*' -name 'runSubagent-*.jsonl'` で存在確認できます。
+> **前提条件**: debug-logs は Copilot Chat のデバッグファイルロギングが有効な場合にのみ書き出されます（バージョン・実験フラグにより挙動が変わる報告あり）。ログが出ていない環境では子セッションの消費はディスクから回収できません。macOS/Linuxでは `find <userData>/User/workspaceStorage -path '*debug-logs*' -name 'runSubagent-*.jsonl'`、Windows PowerShellでは `Get-ChildItem <userData>\User\workspaceStorage -Recurse -Filter 'runSubagent-*.jsonl'` で存在確認できます。
 
 ## インストール
 
@@ -51,7 +52,11 @@ npm link        # `aimet` コマンドをグローバルに登録
 npm test
 ```
 
-テスト内容は3ファイルに分かれています。
+パーサ、DB更新、集計、セキュリティ、macOS/Windowsのパス解決をfixtureベースで自動検証します。さらに、Windows実機でVS Code Copilotのシングル／マルチエージェントを起動し、生ログとDBを独立した検算器で照合するE2Eスクリプトも用意しています（VS CodeへのサインインとCopilotの利用権が必要）。
+
+```powershell
+npm run test:e2e:copilot-windows
+```
 
 **`test/parsers.test.js` — 各ツールパーサの正しさ**
 
@@ -59,13 +64,20 @@ npm test
 - **Claude（未知モデル）**: 単価表にないモデルはコストを **`0`ではなく `null`** にすること。
 - **Codex**: `token_count` の累積値から**最大値**を採用し、`input_tokens` から `cached_input_tokens` を差し引いて非キャッシュ入力に分離すること。reasoningトークンも取得すること。
 - **Codex（モデル不明）**: 既定単価にフォールバックしつつ、単価が推定であることを **`estimated: true`** で明示すること。
-- **Copilot（Chat）**: インクリメンタル差分ログを復元して `requests[]` を組み立て、クレジットが記録されていれば**API換算ではなく実費**（1クレジット=$0.01）でコストを出すこと。
-- **Copilot CLI**: 出力トークンを合計しターン数を数える一方、**入力トークンは記録が無いため0**、コストは算出不可の **`null`** になること。壊れた行は無視すること。
+- **Copilot（Chat）**: ObjectMutationLogの `Set` / `Push` / `Delete` を順番どおり復元できること。`main.jsonl` と `runSubagent-*` はスパンIDで重複排除し、親子のトークンとnano-AIUが生ログの値に一致すること。
+- **Copilot（親子集計）**: `main.jsonl` を同じIDの `chatSessions` より優先し、親と子を各1回だけ加算すること。実ログから匿名化したgolden fixtureで **22.0478895 AI Credits** と正確なトークン数を固定値照合すること。
+- **Copilot CLI**: 出力トークンを合計しターン数を数える一方、**入力トークンは未計測（`null`）**、コストも算出不可の **`null`** になること。壊れた行は無視すること。
 
 **`test/store.test.js` — 保存と冪等性**
 
 - `upsert` が `inserted → skipped → updated` と正しく遷移し、**同じログを何度取り込んでも行が増えない**こと（`last_event_at` による重複防止）。
 - `collect` を同じログに再実行すると、2回目は**すべてskip**されること。
+- Copilotの `own`（自分のみ）と `tree`（子を含む）の両形式で、report / session / Markdownが同じ二重計上防止規則を使うこと。
+
+**`test/paths.test.js` — macOS / Windows互換性**
+
+- `%APPDATA%`、Windowsのフォールバック、Stable / Insiders / VSCodium、`AIMET_COPILOT_DIR`の `;` 区切り、Windows `file://` URIを検証します。
+- CIのWindowsジョブでは、`--dir` なしの自動探索から取り込みまで実行します。
 
 **`test/security.test.js` — レビュー指摘の再発防止**
 
@@ -435,12 +447,12 @@ Anthropicは明示的にキャッシュポイントを指定する方式で、TT
 
 | 取得項目 | Claude Code | Codex | Copilot Chat | Copilot サブエージェント | Copilot CLI |
 |---|---|---|---|---|---|
-| 入力トークン（非キャッシュ） | ✅ 実測 | ✅ 実測 | ✅ 実測（キャッシュ込み総量） | ✅ 実測 | − |
+| 入力トークン（非キャッシュ） | ✅ 実測 | ✅ 実測 | ✅ 実測（`main.jsonl`） | ✅ 実測 | − |
 | 出力トークン | ✅ 実測 | ✅ 実測 | ✅ 実測 | ✅ 実測 | ✅ 実測 |
-| キャッシュ読取（cacheR） | ✅ 実測 | ✅ 実測 | − | ✅ 実測 | − |
+| キャッシュ読取（cacheR） | ✅ 実測 | ✅ 実測 | ✅ 実測（`main.jsonl`） | ✅ 実測 | − |
 | キャッシュ書込（cacheW） | ✅ 実測（1h/5m TTL内訳付き） | −（課金項目が存在しない） | − | −（同左） | − |
 | 推論トークン（reasoning） | − | ✅ 実測 | − | − | − |
-| 実際の消費額 | − | − | ✅ クレジット実費 | − | − |
+| 実際の消費額 | − | − | ✅ AI Credits実測 | ✅ AI Credits実測 | − |
 | モデル名 | ✅ | ✅ | ✅（resolvedModel） | ✅ | ✅ |
 | 時間（wall / active） | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 親子リンク | −（本体側が未記録） | ✅ | ✅ | ✅ | − |
@@ -475,15 +487,15 @@ cost = ( input × 入力単価
 
 **Copilotクレジット（AI Credits）とは**。GitHub Copilotの課金単位で、**1クレジット = $0.01の固定レート**です。2026年6月に従来のプレミアムリクエスト（PRU）制から移行した従量課金モデルで、プランに含まれる月間クレジット枠を消費し、超過分は追加課金されます。重要なのは、**消費クレジット数はモデルや処理量によって変動する**（高価なモデルほど1リクエストあたりの消費が大きい）ため、トークン数から外部で正確に再計算することはできない、という点です。幸いVS CodeのCopilot Chatはリクエストごとの実消費（`copilotCredits`）をログに記録するので、aimetはこれをそのまま採用します — つまりCopilot Chatのcostは推定ではなく**GitHubが実際に差し引いた金額**です。キャッシュの効きやモデルの内部事情もすべて織り込み済みの値なので、キャッシュ内訳（cacheR/cacheW）がログに無くてもコストの正確性には影響しません。
 
-**GitHub Copilot Chat — 実費（クレジット）優先、API換算はフォールバック**。他のツールと違い、**実際の消費クレジットが記録されるため実費で計算します**（`copilotCredits` × $0.01）。表示にはドル換算と併せて**消費クレジット数も併記**されます（例: `cost : $0.0574 (actual, 5.74 Copilot credits)`）。Copilotの予算・管理画面はクレジット建てのため、突き合わせにはこちらを使ってください。リクエスト単位の生クレジットは `aimet detail` で確認できます。クレジットが記録されていないセッションのみ、実測トークン×resolvedModel単価でAPI換算にフォールバックしますが、このとき `promptTokens` にはキャッシュ済み分が含まれており全量をフル単価で見積もるため**上限側（過大）の推定**になります。これを `estimated` フラグ（表示 `*`）で明示します。
+**GitHub Copilot Chat — 実測AI Credits優先、API換算はリクエスト単位のフォールバック**。`main.jsonl` の各LLMスパンにある `copilotUsageNanoAiu` / `aiu` を合計し、AI Creditsを $0.01/クレジットで表示します。`main.jsonl` がない場合は `chatSessions` の `copilotCredits` とトークンを使います。AI Creditsが欠損したリクエストだけ、実測トークン×resolvedModel単価でAPI換算し、全件実測は `actual`、一部フォールバックは `mixed`、全件フォールバックは `estimated` と区別します。
 
-**Copilotサブエージェント — API換算（推定）**。スパントレースに in / cached / out の実測があるため、Codexと同じ方式（cached分を差し引き、cacheRは0.1倍）でAPI換算します。ただしクレジット実費が記録されないこと、内部モデル名（`gpt-5.4-mini` 等）の単価が公表と一致する保証がないことから、**一律 `estimated`** です。親のクレジット実費と子のAPI換算を足した `TOTAL(with subagents)` は「実費＋推定」の混合値である点に注意してください。
+**Copilotサブエージェント — トークンとAI Creditsをリクエスト単位で実測**。`runSubagent-*.jsonl` のLLMスパンから in / cached / out とnano-AIUを取得します。同じ `spanId` は1回だけ数え、親は `main.jsonl` の自分のスパン、子は各 `runSubagent-*` の自分のスパンだけを持つため、親子合計で二重計上しません。AI Credits欠損時のみ、Chatと同じルールでそのリクエストをAPI換算します。
 
 **Copilot CLI — コストは出さない（n/a）**。ログに出力トークンしか記録されず、コストの大半を占める入力トークンが不明です。出力だけで計算した金額は大幅な過小評価になるため、aimetは**誠実にコストをnull（表示 `-`、セッション詳細では `n/a`）**とし、0円として合算に紛れ込ませません。取得できる出力トークン・時間・ターン数は工数指標として利用できます。
 
 ### 精度に関する注意
 
-- **キャッシュ内訳が取れない場合の影響はツールによって異なります**。Copilot Chatは実費があるため影響なし。API換算フォールバック時のみ過大推定（`*` 付き）。cacheWが `-` のOpenAI系（Codex、Copilotサブエージェント）は課金項目自体が存在しないため影響ゼロです。
+- **Copilotの `main.jsonl` / `runSubagent-*` がある場合、キャッシュ内訳とAI Creditsをともに実測できます**。debug-logsがないChatセッションは `chatSessions` に記録された粒度に制限されます。cacheWが `-` のOpenAI系は課金項目自体が存在しないため影響はありません。
 - 単価表が古いとコストがずれます。重要な集計の前に[Anthropic](https://platform.claude.com/docs/en/about-claude/pricing)・[OpenAI](https://openai.com/api/pricing/)の最新単価と `src/pricing.ts` を照合し、必要なら `~/.aimet/pricing.json` で上書きしてください。特に `gpt-5.3` / `gpt-5.4` 系の内蔵単価は近縁モデルからの推定値です
 - バッチ割引、優先スループット課金、サーバーツール（Web検索等）の従量課金は含みません
 - Codexの累積トークンはセッション途中のコンテキスト圧縮（compaction）後も引き継がれる前提です。異常に大きい値が出た場合は `aimet detail` の `tokenTimeline` で推移を確認してください
@@ -499,7 +511,8 @@ cost = ( input × 入力単価
 
 ## 設計メモ
 
-- **冪等性**: `(tool, session_id)` を主キーに、最終イベント時刻が進んだ場合のみ更新。フックの多重発動や `collect` の再実行で二重計上しません。
+- **冪等性**: `(tool, session_id)` を主キーに、最終イベント時刻とログの情報量で更新を判定します。Copilotの同じ親IDは `main.jsonl` > `chatSessions` の固定優先順位とし、取り込み順や時刻に左右されません。
+- **Copilotの集計範囲**: スパントレース由来の親子は `own`（自分のLLM呼び出しのみ）として保存します。過去形式の親が `tree`（子を含む累計）の場合は、集計時に子を再加算しません。report / session / Markdownはすべて同じ共通ロールアップを使います。
 - **Codexのトークン**: `token_count` は累積値のため最大値を採用。`input_tokens` は `cached_input_tokens` を含むため、共通スキーマでは差し引いて「非キャッシュ入力」として記録します。
 - **Codexのマルチエージェント（CLI 0.137以降）**: サブエージェントは別のrolloutファイルになり、`session_meta` の `thread_source: "subagent"` で判別します。子の `payload.session_id` には**親のID**が入っているため、キーには `payload.id`（自スレッドID）を使い、親は `parent_session_id` にリンクします（Copilotと同じグループビューが使えます）。トークン台帳はスレッドごとに独立しており二重計上はありません。
 - **Claude Codeのサブエージェント**: Taskツールの子は同じプロジェクトディレクトリに別JSONLとして保存され、通常のセッションとして集計に含まれます（漏れなし）。ただし現状のClaude Codeは子ログに親セッションIDを記録しないため、親子リンクは未対応です（[claude-code#32175](https://github.com/anthropics/claude-code/issues/32175)）。
@@ -521,7 +534,7 @@ $ aimet report --by tool
     period     tool  sess  turns  active    wall      in     out  cacheR  cacheW  cost($)
 ----------  -------  ----  -----  ------  ------  ------  ------  ------  ------  -------
 2026-07-07    codex     2     32   1.47h   2.19h   1.07M   99.6k  20.54M       -     4.85
-2026-07-07  copilot     4     25   0.05h   0.05h  122.1k   21.7k  415.2k       -    0.08*
+2026-07-07  copilot     5      5   0.00h   0.06h  135.6k   23.8k  505.3k       -     0.22
 2026-07-05  copilot     1      1   0.01h   0.02h   31.3k    1.6k       -       -     0.06
 2026-06-19   claude     1     13   0.26h   0.55h      29    3.9k  292.8k   17.4k     0.25
 
@@ -544,30 +557,30 @@ $ aimet report --by tool --md report.md              # Markdownでファイル�
 ### セッションの深掘り（マルチエージェントのグループビュー）
 
 ```console
-$ aimet session --id 1eaf50d0      # Copilotの親セッション（IDは前方一致）
-session : copilot 1eaf50d0-5520-4edd-a299-70a092c74135
-project : /Users/mayo/dev/myproject
+$ aimet session --id golden-parent      # 実ログを匿名化したgolden fixture
+session : copilot golden-parent-1eaf50d0
+project : unknown
 model   : gpt-5.4-mini
-time    : 2026-07-06T21:30:00.000Z -> 2026-07-06T21:45:00.000Z (active 0.15h / wall 0.25h)
-turns   : 51
-tokens  : in 152.0k / out 9.8k / cacheR 480.0k / cacheW -
-cost    : $9.8002 (actual, 980.02 Copilot credits)
+time    : 2026-07-06T21:36:59.000Z -> 2026-07-06T21:40:19.000Z (active 0.00h / wall 0.06h)
+turns   : 1
+tokens  : in 13.5k / out 2.2k / cacheR 90.1k / cacheW -
+cost    : $0.0223 (actual, 2.23 Copilot credits)
 subagents (4):
-  - call_6NQTrjpkvnZtQ38xK5C  gpt-5.4-mini (runSubagent-Explore)  turns 5 / in 18.4k / out 3.4k / cacheR 64.5k / $0.0131*
-  - call_TZannU0cILOhE5Eg0Jl  gpt-5.4-mini (runSubagent-Explore)  turns 6 / in 17.6k / out 5.6k / cacheR 119.8k / $0.0187*
-  - call_jwW3xYiu5uEGIZqH1nZ  gpt-5.4-mini (runSubagent-Explore)  turns 7 / in 57.0k / out 4.9k / cacheR 109.6k / $0.0267*
-  - call_YdPfBC5yLYyXpNOg8G2  gpt-5.4-mini (runSubagent-Explore)  turns 7 / in 29.1k / out 7.7k / cacheR 121.3k / $0.0257*
-subagents total: turns 25 / in 122.1k / out 21.7k / cacheR 415.2k / cost +$0.0842 (API-equivalent, estimated)
-TOTAL(with subagents): cost $9.8844
+  - golden-child-1  gpt-5.4-mini (runSubagent-Explore)  turns 1 / in 18.4k / out 3.4k / cacheR 64.5k / $0.0307 (actual)
+  - golden-child-2  gpt-5.4-mini (runSubagent-Explore)  turns 1 / in 17.6k / out 5.6k / cacheR 119.8k / $0.0428 (actual)
+  - golden-child-4  gpt-5.4-mini (runSubagent-Explore)  turns 1 / in 57.0k / out 4.9k / cacheR 109.6k / $0.0656 (actual)
+  - golden-child-3  gpt-5.4-mini (runSubagent-Explore)  turns 1 / in 29.1k / out 7.7k / cacheR 121.3k / $0.0590 (actual)
+subagents total: turns 4 / in 122.1k / out 21.7k / cacheR 415.2k / cost +$0.1981 (actual, 19.81 Copilot credits)
+TOTAL(parent + 4 subagents): in 135.6k / out 23.8k / cacheR 505.3k / cost $0.2205 (actual, 22.05 Copilot credits)
 ```
 
 ```console
-$ aimet session --id call_TZ       # 子セッション単体。parent行で親に遡れる
-session : copilot call_TZannU0cILOhE5Eg0JlVpC14
-parent  : 1eaf50d0-5520-4edd-a299-70a092c74135
+$ aimet session --id golden-child-2       # 子セッション単体。parent行で親に遡れる
+session : copilot golden-child-2
+parent  : golden-parent-1eaf50d0
 model   : gpt-5.4-mini (runSubagent-Explore)
 tokens  : in 17.6k / out 5.6k / cacheR 119.8k / cacheW -
-cost    : $0.0187 (API-equivalent, estimated)
+cost    : $0.0428 (actual, 4.28 Copilot credits)
 ```
 
 Codexのマルチエージェントも同様に親子で表示されます：

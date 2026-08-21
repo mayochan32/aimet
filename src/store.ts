@@ -8,6 +8,16 @@ export function defaultDbPath(): string {
   return process.env.AIMET_DB ?? join(homedir(), '.aimet', 'metrics.db');
 }
 
+/** Prefer richer Copilot span traces over task-level chat snapshots. */
+function sourceRank(tool: string, logPath: string): number {
+  if (tool !== 'copilot') return 1;
+  const normalized = logPath.replace(/\\/g, '/');
+  if (/\/GitHub\.copilot-chat\/debug-logs\/[^/]+\/main\.jsonl$/i.test(normalized)) return 3;
+  if (/\/GitHub\.copilot-chat\/debug-logs\/[^/]+\/runSubagent-/i.test(normalized)) return 3;
+  if (normalized.includes('/chatSessions/')) return 2;
+  return 1;
+}
+
 export class Store {
   private db: DatabaseSync;
 
@@ -48,6 +58,8 @@ export class Store {
         reasoning_tokens INTEGER NOT NULL,
         cost_usd REAL,
         estimated INTEGER NOT NULL DEFAULT 0,
+        metric_scope TEXT NOT NULL DEFAULT 'own',
+        cost_source TEXT NOT NULL DEFAULT 'estimated',
         turns INTEGER NOT NULL,
         last_event_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -88,6 +100,8 @@ export class Store {
           reasoning_tokens INTEGER,
           cost_usd REAL,
           estimated INTEGER NOT NULL DEFAULT 0,
+          metric_scope TEXT NOT NULL DEFAULT 'own',
+          cost_source TEXT NOT NULL DEFAULT 'estimated',
           turns INTEGER NOT NULL,
           last_event_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
@@ -97,7 +111,10 @@ export class Store {
         INSERT INTO sessions_new SELECT tool, session_id, log_path, project, model,
           started_at, ended_at, duration_sec, active_sec,
           input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
-          cost_usd, estimated, turns, last_event_at, updated_at, parent_session_id
+          cost_usd, estimated,
+          CASE WHEN tool = 'copilot-cli' THEN 'tree' ELSE 'own' END,
+          CASE WHEN tool = 'copilot' AND estimated = 0 THEN 'actual' ELSE 'estimated' END,
+          turns, last_event_at, updated_at, parent_session_id
           FROM sessions;
         DROP TABLE sessions;
         ALTER TABLE sessions_new RENAME TO sessions;
@@ -114,21 +131,37 @@ export class Store {
         COMMIT;
       `);
     }
+    const currentCols = this.db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[];
+    if (!currentCols.some((c) => c.name === 'metric_scope')) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN metric_scope TEXT NOT NULL DEFAULT 'own'`);
+      this.db.exec(`UPDATE sessions SET metric_scope = 'tree' WHERE tool = 'copilot-cli'`);
+    }
+    if (!currentCols.some((c) => c.name === 'cost_source')) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN cost_source TEXT NOT NULL DEFAULT 'estimated'`);
+      this.db.exec(`UPDATE sessions SET cost_source = 'actual' WHERE tool = 'copilot' AND estimated = 0`);
+    }
   }
 
   /** Idempotent upsert keyed by (tool, session_id); skips stale data. */
   upsert(m: SessionMetrics): 'inserted' | 'updated' | 'skipped' {
     const existing = this.db
-      .prepare('SELECT last_event_at FROM sessions WHERE tool = ? AND session_id = ?')
-      .get(m.tool, m.sessionId) as { last_event_at: string } | undefined;
-    if (existing && existing.last_event_at >= m.lastEventAt) return 'skipped';
+      .prepare('SELECT last_event_at, log_path FROM sessions WHERE tool = ? AND session_id = ?')
+      .get(m.tool, m.sessionId) as { last_event_at: string; log_path: string } | undefined;
+    if (existing) {
+      const oldRank = sourceRank(m.tool, existing.log_path);
+      const newRank = sourceRank(m.tool, m.logPath);
+      if (newRank < oldRank || (newRank === oldRank && existing.last_event_at >= m.lastEventAt)) {
+        return 'skipped';
+      }
+    }
     this.db
       .prepare(
         `INSERT INTO sessions (tool, session_id, log_path, project, model,
            started_at, ended_at, duration_sec, active_sec,
            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
-           cost_usd, estimated, turns, last_event_at, updated_at, parent_session_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           cost_usd, estimated, metric_scope, cost_source,
+           turns, last_event_at, updated_at, parent_session_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(tool, session_id) DO UPDATE SET
            log_path=excluded.log_path, project=excluded.project, model=excluded.model,
            started_at=excluded.started_at, ended_at=excluded.ended_at,
@@ -136,7 +169,8 @@ export class Store {
            input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,
            cache_read_tokens=excluded.cache_read_tokens, cache_write_tokens=excluded.cache_write_tokens,
            reasoning_tokens=excluded.reasoning_tokens, cost_usd=excluded.cost_usd,
-           estimated=excluded.estimated, turns=excluded.turns,
+           estimated=excluded.estimated, metric_scope=excluded.metric_scope,
+           cost_source=excluded.cost_source, turns=excluded.turns,
            last_event_at=excluded.last_event_at, updated_at=excluded.updated_at,
            parent_session_id=excluded.parent_session_id`
       )
@@ -144,7 +178,10 @@ export class Store {
         m.tool, m.sessionId, m.logPath, m.project, m.model,
         m.startedAt, m.endedAt, m.durationSec, m.activeSec,
         m.tokens.input, m.tokens.output, m.tokens.cacheRead, m.tokens.cacheWrite,
-        m.tokens.reasoning, m.costUsd, m.estimated ? 1 : 0, m.turns,
+        m.tokens.reasoning, m.costUsd, m.estimated ? 1 : 0,
+        m.metricScope ?? (m.tool === 'copilot-cli' ? 'tree' : 'own'),
+        m.costSource ?? (m.tool === 'copilot' && !m.estimated ? 'actual' : 'estimated'),
+        m.turns,
         m.lastEventAt, new Date().toISOString(), m.parentSessionId ?? null
       );
     return existing ? 'updated' : 'inserted';

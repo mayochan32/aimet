@@ -1,4 +1,4 @@
-import { fmtTokens, fmtHours, costLabel, tok } from './report.js';
+import { fmtTokens, fmtHours, costLabel, rollupSessionRows, tok } from './report.js';
 
 /** Markdown renderers for the three output levels: report / session / detail. */
 
@@ -75,6 +75,7 @@ export function sessionMd(
   r: Record<string, unknown>,
   children: Record<string, unknown>[] = []
 ): string {
+  const total = rollupSessionRows(r, children);
   const childSection = children.length
     ? [
         '## Subagents',
@@ -93,7 +94,10 @@ export function sessionMd(
           ])
         ),
         '',
-        `**TOTAL (parent + subagents)**: $${(num(r.cost_usd) + children.reduce((s, k) => s + num(k.cost_usd), 0)).toFixed(4)}（子はAPI換算推定 \`*\`）`,
+        `**TOTAL (${r.metric_scope === 'tree' ? 'parent already includes subagents' : 'parent + subagents'})**: ` +
+          `in ${tok(total.input_tokens)} / out ${tok(total.output_tokens)} / ` +
+          `cacheR ${tok(total.cache_read_tokens)} / ` +
+          `${total.cost_usd == null ? 'cost n/a' : '$' + num(total.cost_usd).toFixed(4) + costLabel(total)}`,
         '',
       ]
     : [];

@@ -1,5 +1,5 @@
 import { readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { homedir } from 'node:os';
 import type { Parser, SessionMetrics } from './types.js';
 import { parsers } from './parsers/index.js';
@@ -40,7 +40,7 @@ export async function collect(opts: {
   const active = parsers.filter((p) => !opts.tools || opts.tools.includes(p.tool));
 
   for (const parser of active) {
-    const roots = opts.roots ?? parser.defaultDirs().map((d) => join(homedir(), d));
+    const roots = opts.roots ?? parser.defaultDirs().map((d) => isAbsolute(d) ? d : join(homedir(), d));
     for (const root of roots) {
       for (const file of walk(root)) {
         if (!parser.isLogFile(file)) continue;

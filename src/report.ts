@@ -78,25 +78,33 @@ export function reportRows(store: Store, opts: ReportOpts = {}): Record<string, 
       : period === 'monthly'
         ? `substr(${local}, 1, 7)`
         : `strftime('%Y-W%W', ${local})`;
-  const group = opts.by ? `, ${opts.by}` : '';
+  const group = opts.by ? `, s.${opts.by}` : '';
   const conds: string[] = [];
   const params: unknown[] = [];
   if (opts.sinceDays) {
-    conds.push(`started_at >= datetime('now', '-${Math.floor(opts.sinceDays)} days')`);
+    conds.push(`s.started_at >= datetime('now', '-${Math.floor(opts.sinceDays)} days')`);
   }
   if (opts.tool) {
-    conds.push('tool = ?');
+    conds.push('s.tool = ?');
     params.push(opts.tool);
   }
   if (opts.startISO) {
-    conds.push('started_at >= ?');
+    conds.push('s.started_at >= ?');
     params.push(opts.startISO);
   }
   if (opts.endISO) {
-    conds.push('started_at <= ?');
+    conds.push('s.started_at <= ?');
     params.push(opts.endISO);
   }
-  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+  // A tree-scoped parent already includes descendants. Exclude its child rows
+  // from period totals, while own-scoped VS Code parents are added to children.
+  conds.push(`NOT EXISTS (
+    SELECT 1 FROM sessions parent
+    WHERE parent.tool = s.tool
+      AND parent.session_id = s.parent_session_id
+      AND parent.metric_scope = 'tree'
+  )`);
+  const where = `WHERE ${conds.join(' AND ')}`;
 
   return store.query(
     `SELECT ${bucket} AS period${group},
@@ -112,7 +120,7 @@ export function reportRows(store: Store, opts: ReportOpts = {}): Record<string, 
        SUM(cache_write_tokens) AS cache_write,
        SUM(cost_usd) AS cost_usd,
        MAX(estimated) AS estimated
-     FROM sessions ${where}
+     FROM sessions AS s ${where}
      GROUP BY period${group}
      ORDER BY period DESC${group ? `, ${opts.by}` : ''}`,
     ...params
@@ -151,9 +159,13 @@ export function costLabel(r: Record<string, unknown>): string {
   if (r.tool === 'copilot') {
     // Actual spend: also show the raw credit amount (1 credit = $0.01 fixed),
     // since Copilot budgets/dashboards are denominated in credits.
-    return num(r.estimated)
-      ? ' (API-equivalent, estimated)'
-      : ` (actual, ${(num(r.cost_usd) * 100).toFixed(2)} Copilot credits)`;
+    const source = String(r.cost_source ?? (num(r.estimated) ? 'estimated' : 'actual'));
+    if (source === 'actual') {
+      return ` (actual, ${(num(r.cost_usd) * 100).toFixed(2)} Copilot credits)`;
+    }
+    return source === 'mixed'
+      ? ' (mixed actual + API-equivalent estimate)'
+      : ' (API-equivalent, estimated)';
   }
   return ' (API-equivalent)';
 }
@@ -205,12 +217,52 @@ export function childrenRows(store: Store, sessionId: unknown): Record<string, u
   );
 }
 
+type RollupField = 'turns' | 'active_sec' | 'duration_sec' | 'input_tokens' |
+  'output_tokens' | 'cache_read_tokens' | 'cache_write_tokens' | 'reasoning_tokens' | 'cost_usd';
+
+/** One canonical parent/child rollup used by text and Markdown session views. */
+export function rollupSessionRows(
+  root: Record<string, unknown>,
+  children: Record<string, unknown>[]
+): Record<string, unknown> {
+  const includedChildren = root.metric_scope === 'tree' ? [] : children;
+  const rows = [root, ...includedChildren];
+  const total: Record<string, unknown> = {
+    tool: root.tool,
+    sessions: rows.length,
+    estimated: rows.some((r) => num(r.estimated) > 0) ? 1 : 0,
+    children_included: includedChildren.length,
+  };
+  const partial: string[] = [];
+  const fields: RollupField[] = [
+    'turns', 'active_sec', 'duration_sec', 'input_tokens', 'output_tokens',
+    'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens', 'cost_usd',
+  ];
+  for (const field of fields) {
+    const known = rows.filter((r) => r[field] != null);
+    total[field] = known.length === 0 ? null : known.reduce((sum, r) => sum + num(r[field]), 0);
+    if (known.length > 0 && known.length < rows.length) partial.push(field);
+  }
+  const sources = new Set(rows.map((r) => String(r.cost_source ?? (num(r.estimated) ? 'estimated' : 'actual'))));
+  total.cost_source = sources.size === 1 ? [...sources][0] : 'mixed';
+  total.partial_fields = partial;
+  return total;
+}
+
 /** Human summary for one session (used by `aimet session` / skills). */
 export function sessionSummary(store: Store, opts: { tool?: string; id?: string }): string {
   const r = sessionRow(store, opts);
   if (!r) return 'Session not found.';
   const kids = childrenRollup(store, r.session_id);
   const kidRows = kids ? childrenRows(store, r.session_id) : [];
+  const total = rollupSessionRows(r, kidRows);
+  const kidSources = new Set(kidRows.map((k) => String(k.cost_source ?? (num(k.estimated) ? 'estimated' : 'actual'))));
+  const kidCostMeta: Record<string, unknown> = {
+    tool: r.tool,
+    cost_usd: kids?.cost_usd,
+    cost_source: kidSources.size === 1 ? [...kidSources][0] : 'mixed',
+    estimated: kidRows.some((k) => num(k.estimated) > 0) ? 1 : 0,
+  };
   const kidLines = kids
     ? [
         `subagents (${kids.n}):`,
@@ -219,13 +271,13 @@ export function sessionSummary(store: Store, opts: { tool?: string; id?: string 
             `  - ${String(k.session_id).slice(0, 24)}  ${String(k.model)}  ` +
             `turns ${k.turns} / in ${tok(k.input_tokens)} / out ${tok(k.output_tokens)} / ` +
             `cacheR ${tok(k.cache_read_tokens)} / ` +
-            `${k.cost_usd == null ? 'cost n/a' : '$' + num(k.cost_usd).toFixed(4) + (num(k.estimated) ? '*' : '')}`
+            `${k.cost_usd == null ? 'cost n/a' : '$' + num(k.cost_usd).toFixed(4) + costLabel(k)}`
         ),
-        `subagents total: turns ${kids.turns} / in ${tok(kids.input)} / out ${tok(kids.output)} / cacheR ${tok(kids.cache_read)} / cost +$${num(kids.cost_usd).toFixed(4)} (API-equivalent, estimated)` +
+        `subagents total: turns ${kids.turns} / in ${tok(kids.input)} / out ${tok(kids.output)} / cacheR ${tok(kids.cache_read)} / cost +$${num(kids.cost_usd).toFixed(4)}${costLabel(kidCostMeta)}` +
           (kidRows.some((k) => k.cost_usd == null)
             ? ` ※${kidRows.filter((k) => k.cost_usd == null).length}件は単価不明(n/a)で合算に含まれず`
             : ''),
-        `TOTAL(with subagents): cost $${(num(r.cost_usd) + num(kids.cost_usd)).toFixed(4)}${kidRows.some((k) => k.cost_usd == null) ? ' (一部n/a除く)' : ''}`,
+        rootTotalLine(r, total, kidRows.length),
       ]
     : [];
   const parentLine = r.parent_session_id ? [`parent  : ${r.parent_session_id}`] : [];
@@ -242,4 +294,17 @@ export function sessionSummary(store: Store, opts: { tool?: string; id?: string 
     '',
     'コストは参考値。実際の実行環境に合わせて計算してください。',
   ].join('\n');
+}
+
+function rootTotalLine(
+  root: Record<string, unknown>,
+  total: Record<string, unknown>,
+  childCount: number
+): string {
+  const scopeNote = root.metric_scope === 'tree'
+    ? `parent already includes ${childCount} subagents`
+    : `parent + ${childCount} subagents`;
+  const cost = total.cost_usd == null ? 'n/a' : `$${num(total.cost_usd).toFixed(4)}${costLabel(total)}`;
+  return `TOTAL(${scopeNote}): in ${tok(total.input_tokens)} / out ${tok(total.output_tokens)} / ` +
+    `cacheR ${tok(total.cache_read_tokens)} / cost ${cost}`;
 }

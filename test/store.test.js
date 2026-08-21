@@ -6,6 +6,10 @@ import { tmpdir } from 'node:os';
 
 import { Store } from '../dist/store.js';
 import { collect } from '../dist/collect.js';
+import { reportRows, rollupSessionRows, sessionSummary } from '../dist/report.js';
+import { sessionMd } from '../dist/markdown.js';
+import { copilotParser } from '../dist/parsers/copilot.js';
+import { copilotSubagentParser } from '../dist/parsers/copilotsubagent.js';
 
 function sampleMetrics(overrides = {}) {
   return {
@@ -64,5 +68,126 @@ test('collect: re-running over the same logs skips everything (idempotent)', asy
   assert.equal(second.inserted, 0, 'second pass inserts nothing');
   assert.equal(second.updated, 0, 'second pass updates nothing');
   assert.equal(second.skipped, 1, 'second pass skips the previously ingested session');
+  store.close();
+});
+
+test('store deterministically keeps Copilot main span over chat snapshot', () => {
+  const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-')), 'm.db');
+  const store = new Store(db);
+  const chat = sampleMetrics({
+    tool: 'copilot', sessionId: 'same-parent',
+    logPath: '/x/chatSessions/same-parent.jsonl',
+    lastEventAt: '2026-06-01T00:20:00.000Z',
+    tokens: { input: 10, output: 2, cacheRead: null, cacheWrite: null, reasoning: null },
+  });
+  const main = sampleMetrics({
+    tool: 'copilot', sessionId: 'same-parent',
+    logPath: '/x/GitHub.copilot-chat/debug-logs/same-parent/main.jsonl',
+    lastEventAt: '2026-06-01T00:19:00.000Z',
+    tokens: { input: 100, output: 20, cacheRead: 50, cacheWrite: null, reasoning: null },
+  });
+  assert.equal(store.upsert(chat), 'inserted');
+  assert.equal(store.upsert(main), 'updated', 'richer main wins even with an earlier final timestamp');
+  assert.equal(store.upsert(chat), 'skipped', 'later scan cannot replace main with chat');
+  const row = store.query('SELECT log_path, input_tokens, cache_read_tokens FROM sessions')[0];
+  assert.match(String(row.log_path), /debug-logs/);
+  assert.equal(row.input_tokens, 100);
+  assert.equal(row.cache_read_tokens, 50);
+  store.close();
+});
+
+test('copilot own-scoped parent and children are added exactly once in every view', () => {
+  const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-')), 'm.db');
+  const store = new Store(db);
+  const parent = sampleMetrics({
+    tool: 'copilot', sessionId: 'parent-own', costUsd: 0.01,
+    tokens: { input: 100, output: 10, cacheRead: null, cacheWrite: null, reasoning: null },
+    metricScope: 'own', costSource: 'actual',
+  });
+  const child = sampleMetrics({
+    tool: 'copilot', sessionId: 'child-own', parentSessionId: 'parent-own', costUsd: 0.02,
+    tokens: { input: 200, output: 20, cacheRead: 50, cacheWrite: null, reasoning: null },
+    metricScope: 'own', costSource: 'actual',
+  });
+  store.upsert(parent);
+  store.upsert(child);
+
+  const report = reportRows(store);
+  assert.equal(report[0].sessions, 2);
+  assert.equal(report[0].input, 300);
+  assert.equal(report[0].cost_usd, 0.03);
+
+  const root = store.query('SELECT * FROM sessions WHERE session_id = ?', 'parent-own')[0];
+  const kids = store.query('SELECT * FROM sessions WHERE parent_session_id = ?', 'parent-own');
+  const total = rollupSessionRows(root, kids);
+  assert.equal(total.input_tokens, 300);
+  assert.equal(total.output_tokens, 30);
+  assert.equal(total.cost_usd, 0.03);
+  assert.match(sessionSummary(store, { tool: 'copilot', id: 'parent-own' }), /cost \$0\.0300/);
+  assert.match(sessionMd(root, kids), /\$0\.0300/);
+  store.close();
+});
+
+test('tree-scoped parent prevents descendant double counting', () => {
+  const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-')), 'm.db');
+  const store = new Store(db);
+  store.upsert(sampleMetrics({
+    tool: 'copilot', sessionId: 'parent-tree', costUsd: 0.03,
+    tokens: { input: 300, output: 30, cacheRead: 50, cacheWrite: null, reasoning: null },
+    metricScope: 'tree', costSource: 'actual',
+  }));
+  store.upsert(sampleMetrics({
+    tool: 'copilot', sessionId: 'child-under-tree', parentSessionId: 'parent-tree', costUsd: 0.02,
+    tokens: { input: 200, output: 20, cacheRead: 50, cacheWrite: null, reasoning: null },
+    metricScope: 'own', costSource: 'actual',
+  }));
+
+  const report = reportRows(store);
+  assert.equal(report[0].sessions, 1);
+  assert.equal(report[0].input, 300);
+  assert.equal(report[0].cost_usd, 0.03);
+  const root = store.query('SELECT * FROM sessions WHERE session_id = ?', 'parent-tree')[0];
+  const kids = store.query('SELECT * FROM sessions WHERE parent_session_id = ?', 'parent-tree');
+  const total = rollupSessionRows(root, kids);
+  assert.equal(total.input_tokens, 300);
+  assert.equal(total.cost_usd, 0.03);
+  assert.equal(total.children_included, 0);
+  store.close();
+});
+
+test('sanitized real Copilot golden session preserves parent, four children and exact AIC', async () => {
+  const parent = await copilotParser.parseFile(
+    join(import.meta.dirname, 'fixtures', 'real', 'copilot-golden-parent.jsonl')
+  );
+  assert.ok(parent);
+  assert.equal(parent.tokens.input, 13470);
+  assert.equal(parent.tokens.cacheRead, 90112);
+  assert.equal(parent.tokens.output, 2166);
+  assert.equal(parent.costUsd, 0.02233386);
+
+  const children = [];
+  for (let i = 1; i <= 4; i++) {
+    const child = await copilotSubagentParser.parseFile(
+      join(import.meta.dirname, 'fixtures', 'real', `copilot-golden-child-${i}.jsonl`)
+    );
+    assert.ok(child);
+    children.push(child);
+  }
+  assert.equal(children.reduce((sum, c) => sum + c.tokens.input, 0), 122107);
+  assert.equal(children.reduce((sum, c) => sum + c.tokens.cacheRead, 0), 415232);
+  assert.equal(children.reduce((sum, c) => sum + c.tokens.output, 0), 21653);
+  assert.equal(children.reduce((sum, c) => sum + c.costUsd, 0), 0.198145035);
+
+  const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-')), 'm.db');
+  const store = new Store(db);
+  store.upsert(parent);
+  for (const child of children) store.upsert(child);
+  const rows = reportRows(store, { tool: 'copilot' });
+  assert.equal(rows[0].sessions, 5);
+  assert.equal(rows[0].input, 135577);
+  assert.equal(rows[0].cache_read, 505344);
+  assert.equal(rows[0].output, 23819);
+  assert.ok(Math.abs(rows[0].cost_usd - 0.220478895) < 1e-12);
+  assert.match(sessionSummary(store, { tool: 'copilot', id: 'golden-parent' }), /cost \$0\.2205/);
   store.close();
 });

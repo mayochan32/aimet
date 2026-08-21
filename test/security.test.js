@@ -42,6 +42,7 @@ test('pricing: invalid user entries are ignored, defaults preserved', async () =
     join(home, '.aimet', 'pricing.json'),
     JSON.stringify({
       'my-model': [1, 2, 0.1, 0], // valid
+      'gpt-5': [9, 8, 7, 0], // valid override of a built-in prefix
       'bad-shape': ['x', 2, 3], // invalid -> skipped
       __proto__: [9, 9, 9, 9], // unsafe key -> skipped
     })
@@ -51,6 +52,7 @@ test('pricing: invalid user entries are ignored, defaults preserved', async () =
   const { pricingTable, costUsd } = await import('../dist/pricing.js');
   const t = pricingTable();
   assert.deepEqual(t['my-model'], [1, 2, 0.1, 0], 'valid override accepted');
+  assert.deepEqual(t['gpt-5'], [9, 8, 7, 0], 'built-in entry overridden');
   assert.equal('bad-shape' in t, false, 'invalid entry skipped');
   assert.equal(costUsd('nonexistent-model', { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0 }), null);
 });
