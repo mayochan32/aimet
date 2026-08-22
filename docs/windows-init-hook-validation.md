@@ -66,7 +66,7 @@ echo aimet hook claude disabled
 
 1. ブランチは`codex/copilot-accounting-fix`で、ローカルHEADとリモートHEADが一致する。
 2. `npm test`が成功する。
-3. Windowsではテスト54件がすべて成功し、失敗0件、skip 0件になる。
+3. Windowsではテスト56件がすべて成功し、失敗0件、skip 0件になる。
 4. `test/init.test.js`の5件がすべて成功する。
 5. Windows専用の`Windows collect discovers Copilot logs from APPDATA without --dir`がskipされず成功する。
 6. `git diff --check`がエラーなしで完了する。
@@ -153,8 +153,8 @@ npm test
 Windowsでの期待値:
 
 ```text
-tests 54
-pass 54
+tests 56
+pass 56
 fail 0
 skipped 0
 ```
@@ -183,7 +183,7 @@ git status --short
 - Windowsネイティブ環境である。
 - 対象ブランチとリモートHEADが一致している。
 - 初期化専用5テストが全件成功した。
-- 全自動テスト54件が全件成功し、失敗とskipが0件だった。
+- 全自動テスト56件が全件成功し、失敗とskipが0件だった。
 - Windows専用APPDATA収集テストが成功した。
 - 作業ツリーがテストによって変更されていない。
 

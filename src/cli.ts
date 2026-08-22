@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { Store } from './store.js';
 import { collect, ingestFile } from './collect.js';
-import { writeFileSync } from 'node:fs';
 import { report, reportRows, sessionSummary, sessionRow, childrenRows, parseTimeArg } from './report.js';
 import { reportMd, sessionMd, detailMd } from './markdown.js';
 import { parserFor } from './parsers/index.js';
@@ -13,6 +12,8 @@ import { detail } from './detail.js';
 const USAGE = `aimet - AI Metrics for Claude Code / Codex / GitHub Copilot
 
 Usage:
+  aimet --version                 (show the installed aimet version)
+  aimet --help                    (show this help)
   aimet collect [--tool claude|codex|copilot|copilot-cli] [--since <days>] [--dir <path>]
   aimet report  [--period daily|weekly|monthly] [--by tool|project|model]
               [--tool <tool>] [--since <days>]
@@ -32,6 +33,15 @@ Usage:
 Data: ~/.aimet/metrics.db (override with AIMET_DB)
 Pricing overrides: ~/.aimet/pricing.json`;
 
+function packageVersion(): string {
+  const packageFile = new URL('../package.json', import.meta.url);
+  const pkg = JSON.parse(readFileSync(packageFile, 'utf8')) as { version?: unknown };
+  if (typeof pkg.version !== 'string' || !pkg.version.trim()) {
+    throw new Error(`invalid or missing version in ${packageFile.pathname}`);
+  }
+  return pkg.version;
+}
+
 async function readStdin(): Promise<string> {
   if (process.stdin.isTTY) return '';
   const chunks: Buffer[] = [];
@@ -41,6 +51,14 @@ async function readStdin(): Promise<string> {
 
 async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
+  if (cmd === '--version') {
+    console.log(packageVersion());
+    return;
+  }
+  if (cmd === '--help' || cmd === '-h' || cmd === 'help') {
+    console.log(USAGE);
+    return;
+  }
   const { values } = parseArgs({
     args: rest,
     options: {

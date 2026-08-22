@@ -249,6 +249,11 @@ VS CodeとCopilot拡張は自動更新されるため、将来の再検証では
 
 同じく2026-08-22に、macOS 26.6.2（arm64）のVS Code Stable `1.134.0`／同梱Copilot `0.62.0` build `1`が作成した現行`globalStorage`ログでも再検証しました。シングル親1件、マルチ親1件、`searchSubagent-*`の子2件を独立検算器と照合し、非キャッシュ入力`33,257`、cacheR `44,837`、出力`1,125`、合計`0.8570538 AI Credits`が一致しました。同じログの再収集は`+0 new, ~0 updated, 4 unchanged`で、子の見落とし・二重計上とも発生していません。
 
+**`test/cli.test.js` — CLIバージョンとヘルプ**
+
+- `aimet --version`が実行中の配布パッケージの`package.json`と同じバージョンを出力し、終了コード0になることを検証します。
+- `aimet --help`がバージョン確認コマンドを含むUsageを表示し、終了コード0になることを検証します。
+
 **`test/parsers.test.js` — 各ツールパーサの正しさ**
 
 - **Claude**: assistantレコードの `usage` を合計し、`in` / `out` / `cacheR` / `cacheW` が期待値になること。リトライ/ストリーミングで**同じmessage IDが重複しても二重計上せず**、ターン数も過大計上しないこと。途中に壊れたJSONL行があっても無視して処理を続けること。
@@ -292,6 +297,7 @@ VS CodeとCopilot拡張は自動更新されるため、将来の再検証では
 ### 1. 手動発動 — いつでも取り込み・集計
 
 ```bash
+aimet --version                      # 現在使っているaimetのバージョン
 aimet collect                       # 全ログを走査して取り込み（冪等・再実行安全）
 aimet collect --since 7             # 直近7日に更新されたログのみ
 aimet report                        # 日次サマリー（テキスト表）
@@ -350,7 +356,18 @@ Copilotの場合、エージェントモードでターミナルコマンドの�
 aimet <command> [options]
 ```
 
-すべてのコマンドに共通: データベースは `~/.aimet/metrics.db`（環境変数 `AIMET_DB` で変更可）。引数なしで `aimet` を実行すると使用方法を表示します。
+すべてのコマンドに共通: データベースは `~/.aimet/metrics.db`（環境変数 `AIMET_DB` で変更可）。引数なしの`aimet`または`aimet --help`で使用方法を表示します。
+
+---
+
+### aimet --version — インストール済みバージョンの確認
+
+```console
+$ aimet --version
+1.0.0
+```
+
+実行中のaimetと同じ配布パッケージの`package.json`からバージョンを表示します。複数PCや複数ユーザーで調査する場合は、不具合報告にこの出力を含めてください。
 
 ---
 
