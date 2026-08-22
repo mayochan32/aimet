@@ -182,7 +182,7 @@ User/globalStorage/
     debug-logs/<parent-id>/
 ```
 
-従来の`workspaceStorage`だけを探索すると、現行版の親の`main.jsonl`と子の`runSubagent-*.jsonl`を見落とす。結果として、親内部のLLM呼び出しやサブエージェントの利用量が過少計上される。
+従来の`workspaceStorage`だけを探索すると、現行版の親の`main.jsonl`と子ログを見落とす。結果として、親内部のLLM呼び出しやサブエージェントの利用量が過少計上される。
 
 ### 6.2 現行版ではシングルエージェントにも`main.jsonl`が生成される
 
@@ -274,7 +274,9 @@ Windowsでは`%APPDATA%\<product>\User`を基準とし、`APPDATA`がない場�
 $env:AIMET_COPILOT_DIR = 'D:\VSCodeData\User;E:\VSCodiumData\User'
 ```
 
-### 7.2 `main.jsonl`と`runSubagent-*`のspan解析
+### 7.2 `main.jsonl`と参照された子ログのspan解析
+
+現行版では、親の`main.jsonl`にある`child_session_ref.attrs.childLogFile`を子ファイル名の正式な根拠とする。Microsoftの現行VS Codeソースで説明されている`runSubagent-*`と`searchSubagent-*`は、参照が欠けた旧ログや部分コピー用の互換フォールバックとしても認識する。UI用の`title-*`、`categorization-*`、`summarize-*`は作業セッションとして集計しない。
 
 親と子のspan traceから、リクエスト単位で次を取得する。
 
@@ -310,7 +312,7 @@ AI Creditsは`copilotUsageNanoAiu`、`aiu`の順に使用し、欠損したリ�
 
 VS Code Copilotの実ログでは、親と子がそれぞれ自分自身のLLM呼び出しを保持していた。
 
-そのため、`main.jsonl`と`runSubagent-*.jsonl`はいずれも`metric_scope = own`とする。
+そのため、`main.jsonl`と参照された子JSONLはいずれも`metric_scope = own`とする。
 
 親子合計は次の式となる。
 
@@ -327,7 +329,7 @@ VS Code Copilotの実ログでは、親と子がそれぞれ自分自身のLLM�
 同じ`session_id`に複数候補がある場合、次の順位を使う。
 
 ```text
-main.jsonl / runSubagent-*.jsonl
+main.jsonl / child_session_refで参照された子JSONL
   > chatSessions/*.jsonl
   > その他
 ```
@@ -348,8 +350,8 @@ DBの主キーは`(tool, session_id)`である。このため、同じ親IDの`m
 
 | 優先度 | 情報源 | 処理 |
 |---:|---|---|
-| 1 | 近傍の`workspace.json` | 旧`workspaceStorage`ログからfolder/workspace URIを復号 |
-| 2 | `session-store.db` | `sessions.id`とセッションIDを完全一致させ、`cwd`を採用 |
+| 1 | `session-store.db` | `sessions.id`とセッションIDを完全一致させ、`cwd`を採用 |
+| 2 | 近傍の`workspace.json` | 旧`workspaceStorage`ログからfolder/workspace URIを復号 |
 | 3 | ログ中のファイル参照 | 登録済みworkspaceのうち1件だけに属する場合に採用 |
 | 4 | 同一IDの別ログ | `chatSessions`の既知projectを`main`へ補完 |
 | 5 | 親セッション | 子が不明なら既知の親projectを継承 |
@@ -363,7 +365,9 @@ DBの主キーは`(tool, session_id)`である。このため、同じ親IDの`m
 - WALの更新もキャッシュ更新判定へ含める。
 - DBがない、スキーマが違う、一時的に読めない場合も収集全体を失敗させない。
 
-ファイル参照による補完では、任意の添付ファイルの共通親を勝手にプロジェクトとして採用しない。既存の`workspace.json`へ登録されているworkspaceとの一致だけを使用し、複数候補が一致する場合は`unknown`のままとする。
+ファイル参照による補完では、任意の添付ファイルの共通親を勝手にプロジェクトとして採用しない。既存の`workspace.json`へ登録されているworkspaceとの一致だけを使用し、複数候補が一致する場合は`unknown`のままとする。レビュー後の修正では`userRequest`、プロンプト、メッセージ本文などの自由記述を判定対象から除外し、構造化されたファイル／URI／ツール引数だけを使用する。
+
+また、DBへ`project_source`を保存する。親継承や構造化参照より`workspace.json`と`session-store.db`を高く評価し、後の再収集でより確実な根拠が得られた場合は、イベント時刻が同じでもprojectメタデータだけを更新する。トークン、cacheRead、output、AI Creditsは更新しない。
 
 ### 7.6 Windows固有処理
 

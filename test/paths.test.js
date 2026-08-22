@@ -10,6 +10,7 @@ import {
   collectKnownWorkspaceReferences,
   copilotParser,
   knownWorkspaceProjects,
+  projectInfoOf,
   projectOf,
 } from '../dist/parsers/copilot.js';
 import { copilotSubagentParser } from '../dist/parsers/copilotsubagent.js';
@@ -51,6 +52,7 @@ test('Copilot predicates recognize Windows separators without accepting unrelate
   assert.equal(copilotParser.isLogFile('C:\\x\\workspaceStorage\\h\\chatSessions\\a.jsonl'), true);
   assert.equal(copilotParser.isLogFile('C:\\x\\workspaceStorage\\h\\state.vscdb.jsonl'), false);
   assert.equal(copilotSubagentParser.isLogFile('C:\\x\\GitHub.copilot-chat\\debug-logs\\s\\runSubagent-A-call.jsonl'), true);
+  assert.equal(copilotSubagentParser.isLogFile('C:\\x\\GitHub.copilot-chat\\debug-logs\\s\\searchSubagent-call.jsonl'), true);
 });
 
 test('workspace file URI loses the spurious slash before a Windows drive', () => {
@@ -111,6 +113,10 @@ test('current globalStorage project resolves from exact session-store cwd', () =
 
   assert.equal(projectOf(log, 'indexed-session'), 'C:\\Work\\Indexed Project');
   assert.equal(projectOf(log, 'different-session'), 'unknown', 'never use another session cwd');
+  assert.deepEqual(projectInfoOf(log, 'indexed-session'), {
+    project: 'C:\\Work\\Indexed Project',
+    source: 'session-store',
+  });
 });
 
 test('current globalStorage project falls back to one referenced registered workspace', async () => {
@@ -134,7 +140,7 @@ test('current globalStorage project falls back to one referenced registered work
       name: 'chat:test', spanId: 'span-1', attrs: {
         model: 'gpt-5.2', inputTokens: 10, outputTokens: 2, cachedTokens: 0,
         copilotUsageNanoAiu: 1000,
-        userRequest: JSON.stringify([{ text: 'Use C:\\Work\\Known Project\\src\\index.ts' }]),
+        toolArgs: JSON.stringify({ filePath: 'C:\\Work\\Known Project\\src\\index.ts' }),
       },
     },
   ];
@@ -153,4 +159,21 @@ test('current globalStorage project falls back to one referenced registered work
   const metrics = await copilotSubagentParser.parseFile(log);
   assert.ok(metrics);
   assert.equal(metrics.project.replace(/\\/g, '/'), 'C:/Work/Known Project');
+  assert.equal(metrics.projectSource, 'structured-reference');
+});
+
+test('free-form prompt path mention is not used for project attribution', async () => {
+  const projects = ['C:\\Work\\Known Project'];
+  const matches = new Set();
+  collectKnownWorkspaceReferences({
+    userRequest: JSON.stringify([{ text: 'Discuss C:\\Work\\Known Project\\src\\index.ts' }]),
+    prompt: 'Compare C:\\Work\\Known Project with another repository',
+    message: { path: 'C:\\Work\\Known Project\\src\\index.ts' },
+  }, projects, matches);
+  assert.deepEqual([...matches], []);
+
+  collectKnownWorkspaceReferences({
+    toolArgs: JSON.stringify({ filePath: 'C:\\Work\\Known Project\\src\\index.ts' }),
+  }, projects, matches);
+  assert.deepEqual([...matches], projects, 'structured tool file arguments remain usable');
 });

@@ -58,9 +58,9 @@ function Get-RelevantLogs([string[]]$roots) {
   foreach ($root in $roots) {
     if (!(Test-Path $root)) { continue }
     foreach ($file in Get-ChildItem $root -Recurse -File -Filter '*.jsonl') {
-      $relevant = $file.FullName -match '[\\/]chatSessions[\\/]' -or
-        $file.Name -eq 'main.jsonl' -or
-        $file.Name -like 'runSubagent-*'
+      $inDebugLogs = $file.FullName -match '[\\/]GitHub\.copilot-chat[\\/]debug-logs[\\/]'
+      $uiOnly = $file.Name -match '^(title|categorization|summarize)-'
+      $relevant = $file.FullName -match '[\\/]chatSessions[\\/]' -or ($inDebugLogs -and !$uiOnly)
       if ($relevant -and !$seen.ContainsKey($file.FullName)) {
         $seen[$file.FullName] = $true
         $files += $file
@@ -90,7 +90,10 @@ function Wait-ForLogs([string[]]$roots, [hashtable]$before, [int]$minimumChildre
   $stableSince = $null
   while ((Get-Date) -lt $deadline) {
     $changed = Get-ChangedLogs $roots $before
-    $children = @($changed | Where-Object { $_.Name -like 'runSubagent-*' })
+    $children = @($changed | Where-Object {
+      $_.FullName -match '[\\/]GitHub\.copilot-chat[\\/]debug-logs[\\/]' -and
+      $_.Name -ne 'main.jsonl'
+    })
     $hasParent = @($changed | Where-Object { $_.Name -eq 'main.jsonl' -or $_.FullName -match '[\\/]chatSessions[\\/]' }).Count -gt 0
     $signature = ($changed | Sort-Object FullName | ForEach-Object { "$($_.FullName):$($_.Length):$($_.LastWriteTimeUtc.Ticks)" }) -join '|'
     if ($hasParent -and $children.Count -ge $minimumChildren) {

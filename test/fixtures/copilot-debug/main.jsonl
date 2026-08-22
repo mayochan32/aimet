@@ -1,3 +1,4 @@
 {"v":1,"ts":1783000000000,"dur":0,"sid":"parent-session-1","type":"session_start","name":"session_start","spanId":"session-start-parent-session-1","attrs":{"copilotVersion":"0.55.0"}}
 {"v":1,"ts":1783000001000,"dur":2000,"sid":"parent-session-1","type":"llm_request","name":"chat:gpt-5.2-codex","spanId":"parent-req-1","attrs":{"inputTokens":1000,"outputTokens":100,"cachedTokens":400,"copilotUsageNanoAiu":1250000000,"model":"gpt-5.2-codex"}}
 {"v":1,"ts":1783000002000,"dur":0,"sid":"parent-session-1","type":"child_session_ref","name":"runSubagent-Explore","spanId":"child-ref-1","attrs":{"childSessionId":"call_child_1","childLogFile":"runSubagent-Explore-call_fixture.jsonl","label":"runSubagent-Explore"}}
+{"v":1,"ts":1783000002001,"dur":0,"sid":"parent-session-1","type":"child_session_ref","name":"searchSubagent","spanId":"child-ref-2","attrs":{"childSessionId":"call_search_fixture","childLogFile":"searchSubagent-call_search_fixture.jsonl","label":"searchSubagent"}}

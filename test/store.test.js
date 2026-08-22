@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { mkdtempSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 
 import { Store } from '../dist/store.js';
 import { collect } from '../dist/collect.js';
@@ -48,6 +49,56 @@ test('store: idempotent upsert (insert -> skip -> update)', () => {
   assert.equal(rows[0].n, 1, 'exactly one row (no duplication)');
   assert.equal(rows[0].t, 4, 'row reflects the newer data');
   store.close();
+});
+
+test('store migration adds project provenance and allows an exact later upgrade', () => {
+  const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-')), 'm.db');
+  const oldRow = sampleMetrics({
+    tool: 'copilot', sessionId: 'migrated-project',
+    logPath: '/x/GitHub.copilot-chat/debug-logs/migrated-project/main.jsonl',
+    project: '/old/project', projectSource: 'structured-reference',
+  });
+  const raw = new DatabaseSync(db);
+  raw.exec(`
+    CREATE TABLE sessions (
+      tool TEXT NOT NULL, session_id TEXT NOT NULL, log_path TEXT NOT NULL,
+      project TEXT NOT NULL, model TEXT NOT NULL,
+      started_at TEXT NOT NULL, ended_at TEXT NOT NULL,
+      duration_sec INTEGER NOT NULL, active_sec INTEGER NOT NULL,
+      input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+      cache_read_tokens INTEGER NOT NULL, cache_write_tokens INTEGER NOT NULL,
+      reasoning_tokens INTEGER NOT NULL, cost_usd REAL,
+      estimated INTEGER NOT NULL DEFAULT 0, turns INTEGER NOT NULL,
+      last_event_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (tool, session_id)
+    );
+    INSERT INTO sessions VALUES (
+      'copilot', 'migrated-project',
+      '/x/GitHub.copilot-chat/debug-logs/migrated-project/main.jsonl',
+      '/old/project', 'model',
+      '2026-06-01T00:00:00.000Z', '2026-06-01T00:10:00.000Z',
+      600, 300, 10, 20, 100, 5, 0, 0.01, 0, 3,
+      '2026-06-01T00:10:00.000Z', '2026-06-01T00:10:00.000Z'
+    );
+  `);
+  raw.close();
+
+  const migrated = new Store(db);
+  assert.equal(migrated.query(
+    'SELECT project_source FROM sessions WHERE session_id = ?', 'migrated-project'
+  )[0].project_source, 'legacy');
+  assert.equal(migrated.upsert({
+    ...oldRow,
+    project: '/exact/project',
+    projectSource: 'session-store',
+  }), 'updated');
+  assert.deepEqual({ ...migrated.query(
+    'SELECT project, project_source FROM sessions WHERE session_id = ?', 'migrated-project'
+  )[0] }, {
+    project: '/exact/project',
+    project_source: 'session-store',
+  });
+  migrated.close();
 });
 
 test('collect: re-running over the same logs skips everything (idempotent)', async () => {
@@ -127,6 +178,76 @@ test('lower-ranked Copilot chat snapshot enriches an existing main project only'
   assert.equal(row.input_tokens, 100, 'main metrics are retained');
   assert.equal(row.cache_read_tokens, 50);
   assert.equal(store.upsert(chat), 'skipped', 'project enrichment remains idempotent');
+  store.close();
+});
+
+test('higher-confidence project evidence replaces an earlier heuristic without touching metrics', () => {
+  const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-')), 'm.db');
+  const store = new Store(db);
+  const base = sampleMetrics({
+    tool: 'copilot', sessionId: 'project-upgrade',
+    logPath: '/x/GitHub.copilot-chat/debug-logs/project-upgrade/main.jsonl',
+    project: '/heuristic/project-a', projectSource: 'structured-reference',
+    tokens: { input: 100, output: 20, cacheRead: 50, cacheWrite: null, reasoning: null },
+  });
+
+  assert.equal(store.upsert(base), 'inserted');
+  const child = sampleMetrics({
+    tool: 'copilot', sessionId: 'project-upgrade-child', parentSessionId: 'project-upgrade',
+    logPath: '/x/GitHub.copilot-chat/debug-logs/project-upgrade/runSubagent-child.jsonl',
+    project: 'unknown',
+    tokens: { input: 30, output: 5, cacheRead: 10, cacheWrite: null, reasoning: null },
+  });
+  assert.equal(store.upsert(child), 'inserted');
+  assert.equal(store.upsert({
+    ...base,
+    project: '/exact/project-b',
+    projectSource: 'session-store',
+    tokens: { input: 999, output: 999, cacheRead: 999, cacheWrite: null, reasoning: null },
+  }), 'updated');
+
+  const row = store.query(
+    `SELECT project, project_source, input_tokens, output_tokens, cache_read_tokens
+     FROM sessions WHERE session_id = 'project-upgrade'`
+  )[0];
+  assert.deepEqual({ ...row }, {
+    project: '/exact/project-b',
+    project_source: 'session-store',
+    input_tokens: 100,
+    output_tokens: 20,
+    cache_read_tokens: 50,
+  }, 'metadata-only upgrade preserves the previously accepted metrics');
+  const childRow = store.query(
+    `SELECT project, project_source, input_tokens FROM sessions
+     WHERE session_id = 'project-upgrade-child'`
+  )[0];
+  assert.deepEqual({ ...childRow }, {
+    project: '/exact/project-b',
+    project_source: 'parent',
+    input_tokens: 30,
+  }, 'children inherited from the parent are upgraded without touching metrics');
+  store.close();
+});
+
+test('lower-confidence project evidence cannot replace an exact project', () => {
+  const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-')), 'm.db');
+  const store = new Store(db);
+  const exact = sampleMetrics({
+    tool: 'copilot', sessionId: 'project-no-downgrade',
+    logPath: '/x/GitHub.copilot-chat/debug-logs/project-no-downgrade/main.jsonl',
+    project: '/exact/project', projectSource: 'session-store',
+  });
+  assert.equal(store.upsert(exact), 'inserted');
+  assert.equal(store.upsert({
+    ...exact,
+    project: '/heuristic/project', projectSource: 'structured-reference',
+    lastEventAt: '2026-06-01T00:20:00.000Z',
+  }), 'updated', 'newer metrics may update the row');
+  const row = store.query('SELECT project, project_source FROM sessions')[0];
+  assert.deepEqual({ ...row }, {
+    project: '/exact/project',
+    project_source: 'session-store',
+  });
   store.close();
 });
 

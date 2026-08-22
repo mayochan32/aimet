@@ -1,11 +1,13 @@
-import { basename } from 'node:path';
+import { closeSync, openSync, readSync, statSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import type { Parser, SessionMetrics, TokenUsage } from '../types.js';
 import { costUsd } from '../pricing.js';
 import { jsonlRecords } from './util.js';
 import {
   collectKnownWorkspaceReferences,
   knownWorkspaceProjects,
-  projectOf,
+  projectInfoOf,
 } from './copilot.js';
 import { copilotWorkspaceRoots } from '../paths.js';
 
@@ -16,12 +18,82 @@ function finite(value: unknown): number | null {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
+type ChildReferenceCache = { signature: string; names: Set<string> };
+const childReferenceCaches = new Map<string, ChildReferenceCache>();
+
+function fileSignature(path: string): string {
+  try {
+    const stat = statSync(path);
+    return `${stat.size}:${stat.mtimeMs}`;
+  } catch {
+    return '-';
+  }
+}
+
+function addChildReference(line: string, names: Set<string>): void {
+  if (!line.includes('"child_session_ref"')) return;
+  try {
+    const rec = JSON.parse(line) as Record<string, unknown>;
+    if (rec.type !== 'child_session_ref') return;
+    const attrs = rec.attrs as Record<string, unknown> | undefined;
+    const childLogFile = attrs?.childLogFile;
+    if (
+      typeof childLogFile === 'string' &&
+      childLogFile.toLowerCase().endsWith('.jsonl') &&
+      basename(childLogFile) === childLogFile
+    ) {
+      names.add(childLogFile);
+    }
+  } catch {
+    /* malformed lines are ignored like the normal JSONL parser */
+  }
+}
+
+/** Child filenames explicitly linked by the sibling main.jsonl. */
+function referencedChildLogs(logPath: string): Set<string> {
+  const sessionDir = dirname(logPath);
+  const mainPath = join(sessionDir, 'main.jsonl');
+  const signature = fileSignature(mainPath);
+  const cached = childReferenceCaches.get(sessionDir);
+  if (cached?.signature === signature) return cached.names;
+
+  const names = new Set<string>();
+  let fd: number | undefined;
+  try {
+    // Stream the file because long-running sessions can make main.jsonl large.
+    fd = openSync(mainPath, 'r');
+    const decoder = new StringDecoder('utf8');
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let pending = '';
+    let read = 0;
+    do {
+      read = readSync(fd, buffer, 0, buffer.length, null);
+      pending += read > 0 ? decoder.write(buffer.subarray(0, read)) : decoder.end();
+      let newline = pending.indexOf('\n');
+      while (newline >= 0) {
+        addChildReference(pending.slice(0, newline).replace(/\r$/, ''), names);
+        pending = pending.slice(newline + 1);
+        newline = pending.indexOf('\n');
+      }
+    } while (read > 0);
+    if (pending) addChildReference(pending.replace(/\r$/, ''), names);
+  } catch {
+    // Older/incomplete captures may have no readable main.jsonl. Filename
+    // fallbacks below retain compatibility in that case.
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+
+  childReferenceCaches.set(sessionDir, { signature, names });
+  return names;
+}
+
 /**
  * GitHub Copilot Chat span sessions (multi-agent, VS Code):
  *   Legacy: <userData>/User/workspaceStorage/<hash>/GitHub.copilot-chat/
  *             debug-logs/<parent-session-uuid>/runSubagent-<Agent>-<callId>.jsonl
  *   Current: <userData>/User/globalStorage/github.copilot-chat/
- *             debug-logs/<parent-session-uuid>/runSubagent-<Agent>-<callId>.jsonl
+ *             debug-logs/<parent-session-uuid>/{runSubagent,searchSubagent}-*.jsonl
  *
  * Span-trace format (one span per line):
  *   { v?, ts(ms), dur(ms), sid, type, name, spanId, parentSpanId?, status, attrs }
@@ -32,7 +104,9 @@ function finite(value: unknown): number | null {
  * main.jsonl records every parent-side LLM request, while chatSessions often
  * stores only a task-level snapshot. Both share a session id, so Store gives
  * main.jsonl deterministic precedence rather than counting both.
- * title-*.jsonl is the tiny title-generation request; skipped as noise.
+ * main.jsonl child_session_ref records are the authority for child filenames.
+ * runSubagent-* and searchSubagent-* remain fallbacks for older/incomplete
+ * captures. UI-only title/categorization/summarize logs are never counted.
  *
  * Cost: prefer per-request copilotUsageNanoAiu/aiu. Fall back per request to
  * API-equivalent model pricing only when exact AIU is absent.
@@ -51,8 +125,17 @@ export const copilotSubagentParser: Parser = {
     const normalized = path.replace(/\\/g, '/');
     if (!/\/GitHub\.copilot-chat\/debug-logs\/[^/]+\//i.test(normalized)) return false;
     const name = normalized.split('/').pop() ?? '';
-    return (name === 'main.jsonl' || name.startsWith('runSubagent-')) &&
-      name.toLowerCase().endsWith('.jsonl');
+    if (name.toLowerCase() === 'main.jsonl') return true;
+    if (!name.toLowerCase().endsWith('.jsonl')) return false;
+
+    // Current Copilot writes the exact child filename into the parent's
+    // child_session_ref. This supports future child types without accepting
+    // unrelated title/categorization/summarization LLM logs.
+    if (referencedChildLogs(path).has(name)) return true;
+
+    // Documented filenames retained for old or partially copied captures whose
+    // main.jsonl is missing or predates child_session_ref.
+    return /^(?:runSubagent-|searchSubagent-).+\.jsonl$/i.test(name);
   },
 
   async parseFile(path: string): Promise<SessionMetrics | null> {
@@ -137,8 +220,9 @@ export const copilotSubagentParser: Parser = {
     }
 
     if (!sessionId || requests === 0 || !Number.isFinite(firstTs)) return null;
+    if (basename(path).toLowerCase() !== 'main.jsonl' && !parentSessionId) return null;
 
-    const indexedProject = projectOf(path, parentSessionId ?? sessionId);
+    const indexedProject = projectInfoOf(path, parentSessionId ?? sessionId);
     const referencedProject = referencedProjects.size === 1
       ? [...referencedProjects][0]
       : 'unknown';
@@ -149,7 +233,10 @@ export const copilotSubagentParser: Parser = {
       logPath: path,
       // Current session-store rows are keyed by the top-level session. Child
       // span ids are call ids, so resolve them through parentSessionId.
-      project: indexedProject !== 'unknown' ? indexedProject : referencedProject,
+      project: indexedProject.project !== 'unknown' ? indexedProject.project : referencedProject,
+      projectSource: indexedProject.project !== 'unknown'
+        ? indexedProject.source
+        : referencedProject !== 'unknown' ? 'structured-reference' : 'unknown',
       model: `${model || 'unknown'}${parentSessionId && label ? ` (${label})` : ''}`,
       startedAt: new Date(firstTs).toISOString(),
       endedAt: new Date(lastTs).toISOString(),

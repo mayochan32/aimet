@@ -2,6 +2,16 @@
 
 export type Tool = 'claude' | 'codex' | 'copilot' | 'copilot-cli';
 
+/** Evidence used to associate a session with a project. */
+export type ProjectSource =
+  | 'unknown'
+  | 'legacy'
+  | 'parent'
+  | 'structured-reference'
+  | 'workspace-json'
+  | 'session-store'
+  | 'log';
+
 /**
  * Token counts. `null` means "the tool's log does NOT record this value"
  * (rendered as `-`), as opposed to a measured 0.
@@ -28,6 +38,8 @@ export interface SessionMetrics {
   logPath: string;
   /** working directory / project path (best effort) */
   project: string;
+  /** evidence supporting project; higher-confidence evidence may replace lower */
+  projectSource?: ProjectSource;
   /** primary model used in the session */
   model: string;
   startedAt: string; // ISO 8601

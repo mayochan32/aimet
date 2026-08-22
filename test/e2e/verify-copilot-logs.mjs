@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 const [dbPath, logRoot, resultPath] = process.argv.slice(2);
@@ -148,10 +148,21 @@ function directSpanOracle(path) {
 }
 
 const allFiles = [...walk(logRoot)];
-const spanFiles = allFiles.filter((path) => {
-  const name = basename(path);
-  return name === 'main.jsonl' || name.startsWith('runSubagent-');
-});
+const allFileSet = new Set(allFiles);
+const mainFiles = allFiles.filter((path) => basename(path) === 'main.jsonl');
+const referencedChildren = mainFiles.flatMap((mainPath) => records(mainPath)
+  .filter((rec) => rec.type === 'child_session_ref')
+  .flatMap((rec) => {
+    const child = rec.attrs?.childLogFile;
+    if (typeof child !== 'string' || basename(child) !== child || !child.endsWith('.jsonl')) return [];
+    const childPath = join(dirname(mainPath), child);
+    assert.ok(allFileSet.has(childPath), `main.jsonl references missing child log ${childPath}`);
+    return [childPath];
+  }));
+const fallbackChildren = allFiles.filter((path) =>
+  /^(?:runSubagent-|searchSubagent-).+\.jsonl$/i.test(basename(path))
+);
+const spanFiles = [...new Set([...mainFiles, ...referencedChildren, ...fallbackChildren])];
 assert.ok(spanFiles.length > 0, 'no Copilot span traces were captured');
 const spanExpected = spanFiles.map(directSpanOracle).filter(Boolean);
 const mainIds = new Set(spanExpected.filter((item) => !item.parentSessionId).map((item) => item.sessionId));

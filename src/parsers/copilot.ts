@@ -2,7 +2,7 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import type { Parser, SessionMetrics, TokenUsage } from '../types.js';
+import type { Parser, ProjectSource, SessionMetrics, TokenUsage } from '../types.js';
 import { costUsd } from '../pricing.js';
 import { jsonlRecords } from './util.js';
 import { copilotWorkspaceRoots } from '../paths.js';
@@ -107,6 +107,8 @@ type SessionProjectCache = {
 const sessionProjectCaches = new Map<string, SessionProjectCache>();
 const workspaceProjectCaches = new Map<string, string[]>();
 
+export type ProjectInfo = { project: string; source: ProjectSource };
+
 function fileSignature(path: string): string {
   try {
     const stat = statSync(path);
@@ -207,42 +209,73 @@ function comparablePath(value: string): string {
   return normalized.replace(/\\/g, '/');
 }
 
+const DIRECT_REFERENCE_KEYS = new Set([
+  'cwd', 'path', 'filepath', 'fileuri', 'fspath', 'resourcepath', 'resourceuri',
+  'workspacefolder', 'workspacepath', 'workspaceuri',
+]);
+const REFERENCE_CONTAINER_KEYS = new Set(['attachment', 'attachments', 'file', 'files', 'reference', 'references', 'resource', 'resources']);
+const ARGUMENT_CONTAINER_KEYS = new Set(['argument', 'arguments', 'args', 'toolargs', 'toolarguments', 'toolinput']);
+const FREE_TEXT_KEYS = new Set(['content', 'instruction', 'instructions', 'message', 'prompt', 'query', 'text', 'userrequest']);
+
+const normalizedKey = (key: string): string => key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+
+function addKnownWorkspaceMatches(value: string, projects: string[], matches: Set<string>): void {
+  const normalized = comparablePath(value);
+  for (const project of projects) {
+    const candidate = comparablePath(project).replace(/\/$/, '');
+    const windowsPath = /^[A-Za-z]:\//.test(candidate);
+    const haystack = windowsPath ? normalized.toLowerCase() : normalized;
+    const needle = windowsPath ? candidate.toLowerCase() : candidate;
+    if (haystack.includes(`${needle}/`) || haystack === needle) matches.add(project);
+  }
+}
+
 /**
- * Add only registered VS Code workspaces referenced by structured log data.
- * This never invents a project from the common parent of arbitrary attachments.
+ * Add registered VS Code workspaces referenced by structured file/resource data.
+ * Free-form strings such as userRequest are deliberately ignored: mentioning a
+ * path in a prompt is not evidence that the session belongs to that project.
  */
 export function collectKnownWorkspaceReferences(
   value: unknown,
   projects: string[],
   matches: Set<string>,
-  depth = 0
+  depth = 0,
+  acceptString = false,
+  parseJson = false
 ): void {
   if (depth > 12 || value === null || value === undefined) return;
   if (typeof value === 'string') {
-    const normalized = comparablePath(value);
-    for (const project of projects) {
-      const candidate = comparablePath(project).replace(/\/$/, '');
-      const windowsPath = /^[A-Za-z]:\//.test(candidate);
-      const haystack = windowsPath ? normalized.toLowerCase() : normalized;
-      const needle = windowsPath ? candidate.toLowerCase() : candidate;
-      if (haystack.includes(`${needle}/`) || haystack === needle) matches.add(project);
-    }
-    if (value.startsWith('{') || value.startsWith('[')) {
+    if (acceptString) addKnownWorkspaceMatches(value, projects, matches);
+    if (parseJson && (value.startsWith('{') || value.startsWith('['))) {
       try {
         collectKnownWorkspaceReferences(JSON.parse(value), projects, matches, depth + 1);
       } catch {
-        /* ordinary text, not nested JSON */
+        /* not structured JSON arguments */
       }
     }
     return;
   }
   if (Array.isArray(value)) {
-    for (const item of value) collectKnownWorkspaceReferences(item, projects, matches, depth + 1);
+    for (const item of value) {
+      collectKnownWorkspaceReferences(item, projects, matches, depth + 1, acceptString, parseJson);
+    }
     return;
   }
   if (typeof value === 'object') {
-    for (const item of Object.values(value as Record<string, unknown>)) {
-      collectKnownWorkspaceReferences(item, projects, matches, depth + 1);
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      const normalized = normalizedKey(key);
+      if (FREE_TEXT_KEYS.has(normalized)) continue;
+      const direct = DIRECT_REFERENCE_KEYS.has(normalized);
+      const references = REFERENCE_CONTAINER_KEYS.has(normalized);
+      const argumentsContainer = ARGUMENT_CONTAINER_KEYS.has(normalized);
+      collectKnownWorkspaceReferences(
+        item,
+        projects,
+        matches,
+        depth + 1,
+        direct || references,
+        direct || references || argumentsContainer
+      );
     }
   }
 }
@@ -256,23 +289,28 @@ export function collectKnownWorkspaceReferences(
  *
  * Walk upward because chatSessions and debug-logs have different depths.
  */
-export function projectOf(logPath: string, sessionId = ''): string {
+export function projectInfoOf(logPath: string, sessionId = ''): ProjectInfo {
   let dir = dirname(logPath);
   for (let i = 0; i < 6; i++) {
     const ws = join(dir, 'workspace.json');
     if (existsSync(ws)) {
       const workspace = workspaceProjectFile(ws);
-      if (workspace !== 'unknown') return workspace;
+      if (workspace !== 'unknown') return { project: workspace, source: 'workspace-json' };
       break;
     }
     const sessionDb = join(dir, 'session-store.db');
     const indexed = sessionStoreProject(sessionDb, sessionId);
-    if (indexed !== 'unknown') return indexed;
+    if (indexed !== 'unknown') return { project: indexed, source: 'session-store' };
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  return 'unknown';
+  return { project: 'unknown', source: 'unknown' };
+}
+
+/** Backwards-compatible value-only project lookup. */
+export function projectOf(logPath: string, sessionId = ''): string {
+  return projectInfoOf(logPath, sessionId).project;
 }
 
 function finite(v: unknown): number | null {
@@ -368,11 +406,13 @@ export const copilotParser: Parser = {
     const first = timestamps[0];
     const last = timestamps[timestamps.length - 1];
 
+    const projectInfo = projectInfoOf(path, (s.sessionId as string) || basename(path, '.jsonl'));
     return {
       tool: 'copilot',
       sessionId: (s.sessionId as string) || basename(path, '.jsonl'),
       logPath: path,
-      project: projectOf(path, (s.sessionId as string) || basename(path, '.jsonl')),
+      project: projectInfo.project,
+      projectSource: projectInfo.source,
       model: model || 'unknown',
       startedAt: iso(first),
       endedAt: iso(last),

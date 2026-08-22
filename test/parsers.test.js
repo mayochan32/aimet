@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
+import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 import { claudeParser } from '../dist/parsers/claude.js';
 import { codexParser } from '../dist/parsers/codex.js';
@@ -157,9 +159,56 @@ test('copilot subagent: combines exact AIU with per-request fallback as mixed', 
 
 test('copilot subagent: rejects unrelated span files via isLogFile', () => {
   assert.equal(copilotSubagentParser.isLogFile('/x/GitHub.copilot-chat/debug-logs/u/main.jsonl'), true);
-  assert.equal(copilotSubagentParser.isLogFile('/x/debug-logs/u/title-a.jsonl'), false);
+  assert.equal(copilotSubagentParser.isLogFile('/x/GitHub.copilot-chat/debug-logs/u/title-a.jsonl'), false);
+  assert.equal(copilotSubagentParser.isLogFile('/x/GitHub.copilot-chat/debug-logs/u/categorization-a.jsonl'), false);
+  assert.equal(copilotSubagentParser.isLogFile('/x/GitHub.copilot-chat/debug-logs/u/summarize-a.jsonl'), false);
+  assert.equal(copilotSubagentParser.isLogFile('/x/GitHub.copilot-chat/debug-logs/u/futureAgent-a.jsonl'), false);
   assert.equal(copilotSubagentParser.isLogFile('/x/GitHub.copilot-chat/debug-logs/u/runSubagent-Explore-call_1.jsonl'), true);
+  assert.equal(copilotSubagentParser.isLogFile('/x/GitHub.copilot-chat/debug-logs/u/searchSubagent-call_1.jsonl'), true);
   assert.equal(copilotSubagentParser.isLogFile('/other/debug-logs/u/main.jsonl'), false);
+});
+
+test('copilot child discovery follows main child_session_ref beyond known filename prefixes', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-child-ref-'));
+  const dir = join(root, 'GitHub.copilot-chat', 'debug-logs', 'parent');
+  mkdirSync(dir, { recursive: true });
+  const childName = 'futureAgent-call_1.jsonl';
+  writeFileSync(join(dir, 'main.jsonl'), JSON.stringify({
+    type: 'child_session_ref',
+    attrs: { childSessionId: 'future-child', childLogFile: childName },
+  }) + '\n');
+  writeFileSync(join(dir, childName), [
+    { ts: 1, sid: 'future-child', type: 'session_start', attrs: { parentSessionId: 'parent' } },
+    { ts: 2, dur: 1, sid: 'future-child', type: 'llm_request', spanId: 'r1', attrs: {
+      inputTokens: 10, cachedTokens: 4, outputTokens: 2, copilotUsageNanoAiu: 0,
+    } },
+  ].map(JSON.stringify).join('\n'));
+
+  assert.equal(copilotSubagentParser.isLogFile(join(dir, childName)), true);
+  const child = await copilotSubagentParser.parseFile(join(dir, childName));
+  assert.ok(child);
+  assert.equal(child.parentSessionId, 'parent');
+  assert.equal(child.tokens.input, 6);
+  assert.equal(child.tokens.cacheRead, 4);
+});
+
+test('copilot search subagent is an exact zero-credit child session', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-search-child-'));
+  const dir = join(root, 'GitHub.copilot-chat', 'debug-logs', 'parent-session-1');
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, 'searchSubagent-call_search_fixture.jsonl');
+  copyFileSync(fx('copilot-debug/searchSubagent-call_search_fixture.jsonl'), path);
+  assert.equal(copilotSubagentParser.isLogFile(path), true);
+  const child = await copilotSubagentParser.parseFile(path);
+  assert.ok(child);
+  assert.equal(child.sessionId, 'call_search_fixture');
+  assert.equal(child.parentSessionId, 'parent-session-1');
+  assert.deepEqual(child.tokens, {
+    input: 20, output: 10, cacheRead: 80, cacheWrite: null, reasoning: null,
+  });
+  assert.equal(child.costUsd, 0);
+  assert.equal(child.costSource, 'actual');
+  assert.equal(child.estimated, false);
 });
 
 test('copilot parent main span is exact and own-scoped', async () => {

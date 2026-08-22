@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, existsSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import type { SessionMetrics } from './types.js';
+import type { ProjectSource, SessionMetrics } from './types.js';
 
 export function defaultDbPath(): string {
   return process.env.AIMET_DB ?? join(homedir(), '.aimet', 'metrics.db');
@@ -13,13 +13,32 @@ function sourceRank(tool: string, logPath: string): number {
   if (tool !== 'copilot') return 1;
   const normalized = logPath.replace(/\\/g, '/');
   if (/\/GitHub\.copilot-chat\/debug-logs\/[^/]+\/main\.jsonl$/i.test(normalized)) return 3;
-  if (/\/GitHub\.copilot-chat\/debug-logs\/[^/]+\/runSubagent-/i.test(normalized)) return 3;
+  if (/\/GitHub\.copilot-chat\/debug-logs\/[^/]+\/[^/]+\.jsonl$/i.test(normalized)) return 3;
   if (normalized.includes('/chatSessions/')) return 2;
   return 1;
 }
 
 function knownProject(project: string | undefined | null): project is string {
   return Boolean(project && project.trim() && project !== 'unknown');
+}
+
+function normalizedProjectSource(m: SessionMetrics): ProjectSource {
+  if (!knownProject(m.project)) return 'unknown';
+  // Rows produced before provenance was introduced are deliberately low trust,
+  // so exact evidence discovered during a later collection can replace them.
+  return m.projectSource ?? (m.tool === 'copilot' ? 'legacy' : 'log');
+}
+
+function projectSourceRank(source: string | undefined | null): number {
+  switch (source) {
+    case 'session-store': return 5;
+    case 'workspace-json':
+    case 'log': return 4;
+    case 'structured-reference':
+    case 'legacy': return 2;
+    case 'parent': return 1;
+    default: return 0;
+  }
 }
 
 export class Store {
@@ -50,6 +69,7 @@ export class Store {
         session_id TEXT NOT NULL,
         log_path TEXT NOT NULL,
         project TEXT NOT NULL,
+        project_source TEXT NOT NULL DEFAULT 'unknown',
         model TEXT NOT NULL,
         started_at TEXT NOT NULL,
         ended_at TEXT NOT NULL,
@@ -92,6 +112,7 @@ export class Store {
           session_id TEXT NOT NULL,
           log_path TEXT NOT NULL,
           project TEXT NOT NULL,
+          project_source TEXT NOT NULL DEFAULT 'unknown',
           model TEXT NOT NULL,
           started_at TEXT NOT NULL,
           ended_at TEXT NOT NULL,
@@ -112,7 +133,8 @@ export class Store {
           parent_session_id TEXT,
           PRIMARY KEY (tool, session_id)
         );
-        INSERT INTO sessions_new SELECT tool, session_id, log_path, project, model,
+        INSERT INTO sessions_new SELECT tool, session_id, log_path, project,
+          CASE WHEN project = 'unknown' THEN 'unknown' ELSE 'legacy' END, model,
           started_at, ended_at, duration_sec, active_sec,
           input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
           cost_usd, estimated,
@@ -144,42 +166,54 @@ export class Store {
       this.db.exec(`ALTER TABLE sessions ADD COLUMN cost_source TEXT NOT NULL DEFAULT 'estimated'`);
       this.db.exec(`UPDATE sessions SET cost_source = 'actual' WHERE tool = 'copilot' AND estimated = 0`);
     }
+    if (!currentCols.some((c) => c.name === 'project_source')) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN project_source TEXT NOT NULL DEFAULT 'unknown'`);
+      this.db.exec(`UPDATE sessions SET project_source = 'legacy' WHERE project <> 'unknown'`);
+    }
   }
 
   /** Idempotent upsert keyed by (tool, session_id); skips stale data. */
   upsert(m: SessionMetrics): 'inserted' | 'updated' | 'skipped' {
     const existing = this.db
-      .prepare('SELECT last_event_at, log_path, project FROM sessions WHERE tool = ? AND session_id = ?')
+      .prepare('SELECT last_event_at, log_path, project, project_source FROM sessions WHERE tool = ? AND session_id = ?')
       .get(m.tool, m.sessionId) as {
         last_event_at: string;
         log_path: string;
         project: string;
+        project_source: string;
       } | undefined;
 
     // A child debug span has its own call id, while Copilot's session index is
     // keyed by the top-level parent id. Inherit only a known parent project.
     let project = m.project;
+    let projectSource = normalizedProjectSource(m);
     if (!knownProject(project) && m.parentSessionId) {
       const parent = this.db
         .prepare('SELECT project FROM sessions WHERE tool = ? AND session_id = ?')
         .get(m.tool, m.parentSessionId) as { project: string } | undefined;
-      if (knownProject(parent?.project)) project = parent.project;
+      if (knownProject(parent?.project)) {
+        project = parent.project;
+        projectSource = 'parent';
+      }
     }
 
     if (existing) {
       const oldRank = sourceRank(m.tool, existing.log_path);
       const newRank = sourceRank(m.tool, m.logPath);
-      const enrichesProject = !knownProject(existing.project) && knownProject(project);
+      const improvesProject = knownProject(project) && (
+        !knownProject(existing.project) ||
+        projectSourceRank(projectSource) > projectSourceRank(existing.project_source)
+      );
 
       // A lower-ranked chat snapshot must never replace exact span metrics,
       // but it may contribute the workspace.json-derived project for the same
       // session id.
       if (newRank < oldRank) {
-        if (enrichesProject) {
+        if (improvesProject) {
           this.db.prepare(
-            `UPDATE sessions SET project = ?, updated_at = ?
+            `UPDATE sessions SET project = ?, project_source = ?, updated_at = ?
              WHERE tool = ? AND session_id = ?`
-          ).run(project, new Date().toISOString(), m.tool, m.sessionId);
+          ).run(project, projectSource, new Date().toISOString(), m.tool, m.sessionId);
           this.backfillChildProjects(m.tool, m.sessionId, project);
           return 'updated';
         }
@@ -188,14 +222,20 @@ export class Store {
 
       // Preserve a known project when a richer main.jsonl supersedes a chat
       // snapshot that carried the workspace association.
-      if (!knownProject(project) && knownProject(existing.project)) project = existing.project;
+      if (knownProject(existing.project) && (
+        !knownProject(project) ||
+        projectSourceRank(projectSource) < projectSourceRank(existing.project_source)
+      )) {
+        project = existing.project;
+        projectSource = existing.project_source as ProjectSource;
+      }
 
       if (newRank === oldRank && existing.last_event_at >= m.lastEventAt) {
-        if (enrichesProject) {
+        if (improvesProject) {
           this.db.prepare(
-            `UPDATE sessions SET project = ?, updated_at = ?
+            `UPDATE sessions SET project = ?, project_source = ?, updated_at = ?
              WHERE tool = ? AND session_id = ?`
-          ).run(project, new Date().toISOString(), m.tool, m.sessionId);
+          ).run(project, projectSource, new Date().toISOString(), m.tool, m.sessionId);
           this.backfillChildProjects(m.tool, m.sessionId, project);
           return 'updated';
         }
@@ -204,14 +244,15 @@ export class Store {
     }
     this.db
       .prepare(
-        `INSERT INTO sessions (tool, session_id, log_path, project, model,
+        `INSERT INTO sessions (tool, session_id, log_path, project, project_source, model,
            started_at, ended_at, duration_sec, active_sec,
            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
            cost_usd, estimated, metric_scope, cost_source,
            turns, last_event_at, updated_at, parent_session_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(tool, session_id) DO UPDATE SET
-           log_path=excluded.log_path, project=excluded.project, model=excluded.model,
+           log_path=excluded.log_path, project=excluded.project,
+           project_source=excluded.project_source, model=excluded.model,
            started_at=excluded.started_at, ended_at=excluded.ended_at,
            duration_sec=excluded.duration_sec, active_sec=excluded.active_sec,
            input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,
@@ -223,7 +264,7 @@ export class Store {
            parent_session_id=excluded.parent_session_id`
       )
       .run(
-        m.tool, m.sessionId, m.logPath, project, m.model,
+        m.tool, m.sessionId, m.logPath, project, projectSource, m.model,
         m.startedAt, m.endedAt, m.durationSec, m.activeSec,
         m.tokens.input, m.tokens.output, m.tokens.cacheRead, m.tokens.cacheWrite,
         m.tokens.reasoning, m.costUsd, m.estimated ? 1 : 0,
@@ -239,8 +280,9 @@ export class Store {
   /** Fill children that were scanned before their parent without touching metrics. */
   private backfillChildProjects(tool: string, parentSessionId: string, project: string): void {
     this.db.prepare(
-      `UPDATE sessions SET project = ?, updated_at = ?
-       WHERE tool = ? AND parent_session_id = ? AND project = 'unknown'`
+      `UPDATE sessions SET project = ?, project_source = 'parent', updated_at = ?
+       WHERE tool = ? AND parent_session_id = ?
+         AND (project = 'unknown' OR project_source = 'parent')`
     ).run(project, new Date().toISOString(), tool, parentSessionId);
   }
 

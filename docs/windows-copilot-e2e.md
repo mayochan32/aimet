@@ -32,7 +32,7 @@ aimetは、Claude Code、Codex CLI、GitHub CopilotがローカルPCに保存し
 | ファイル | 責務 |
 |---|---|
 | `src/parsers/copilot.ts` | `chatSessions` のObjectMutationLog復元とChat親セッションの計測 |
-| `src/parsers/copilotsubagent.ts` | `main.jsonl` の親と `runSubagent-*` の子のスパン計測 |
+| `src/parsers/copilotsubagent.ts` | `main.jsonl` の親と、`child_session_ref`で参照された子（`runSubagent-*` / `searchSubagent-*`など）のスパン計測 |
 | `src/store.ts` | DBスキーマ、冪等upsert、同じ親IDでの `main.jsonl` 優先 |
 | `src/report.ts` / `src/markdown.ts` | `own` / `tree` に基づく共通の親子集計 |
 | `src/paths.ts` | macOS / Windows / LinuxのVS Codeログパス解決 |
@@ -50,25 +50,29 @@ VS CodeのGitHub Copilot Chatでサブエージェントを使った場合、親
 
 - `chatSessions/<session-id>.jsonl`: VS Code Chatセッションのスナップショット。親の内部LLM呼び出しをすべて網羅しない場合がある。
 - `GitHub.copilot-chat/debug-logs/<parent-id>/main.jsonl`: 親エージェント自身のLLM呼び出し。
-- `GitHub.copilot-chat/debug-logs/<parent-id>/runSubagent-*.jsonl`: 各サブエージェント自身のLLM呼び出し。
+- `GitHub.copilot-chat/debug-logs/<parent-id>/<child-log>.jsonl`: 各サブエージェント自身のLLM呼び出し。正確なファイル名は親の`child_session_ref.attrs.childLogFile`に記録され、現行版では`runSubagent-*`と`searchSubagent-*`が公式に説明されている。
+
+現行の公式説明は[Microsoft VS CodeソースのCopilot troubleshoot skill — Data Source](https://github.com/microsoft/vscode/blob/main/extensions/copilot/assets/prompts/skills/troubleshoot/SKILL.md#data-source)にあります。`runSubagent-*`は通常／カスタムサブエージェント、`searchSubagent-*`は検索サブエージェントです。ファイル名の違いはWindowsとmacOSの違いではありません。`title-*`、`categorization-*`、`summarize-*`はUI処理用なので計測対象外です。
 
 この構造に基づき、修正版は次の規則で集計します。
 
 1. 同じ親IDの `chatSessions` と `main.jsonl` がある場合は、情報量の多い `main.jsonl` を必ず優先する。
-2. `main.jsonl` の親と各 `runSubagent-*` の子は、それぞれ「自分のLLM呼び出しだけ」を保持する（`metric_scope = own`）。
+2. `main.jsonl` の親と参照された各子ログは、それぞれ「自分のLLM呼び出しだけ」を保持する（`metric_scope = own`）。
 3. 親子合計では親と子をそれぞれ1回だけ加算する。
 4. 過去形式のように親が子込みの累計値を持つ場合は `metric_scope = tree` とし、子を再加算しない。
 5. 各LLMリクエストの `copilotUsageNanoAiu` / `aiu` から実測AI Creditsを取得する。欠損したリクエストだけ、モデル単価によるAPI換算を使う。
 6. report、session、Markdownのすべてが同じ親子ロールアップ規則を使う。
 
-この修正は `codex/copilot-accounting-fix` ブランチに実装済みです。macOSでは実ログと照合し、次のマルチエージェントセッションが一致しています。これはWindowsで同じ数値を出すべきという意味ではなく、検証方法が実績を持つことの参考値です。Windowsでは新しいセッションが作られるため、数値自体は異なります。
+この修正は `codex/copilot-accounting-fix` ブランチに実装済みです。2026-08-22にmacOS 26.6.2（arm64）、VS Code Stable 1.134.0、同梱Copilot 0.62.0 build 1の実ログと照合し、次の値が一致しています。これはWindowsで同じ数値を出すべきという意味ではなく、検証方法が実績を持つことの参考値です。Windowsでは新しいセッションが作られるため、数値自体は異なります。
 
-- 親: 1セッション / 6 LLMリクエスト
-- 子: 4セッション / 5 + 6 + 7 + 7 LLMリクエスト
-- 非キャッシュ入力: 135,577
-- cacheR: 505,344
-- 出力: 23,819
-- 合計: 22.0478895 AI Credits
+- シングル親: 1セッション
+- マルチ親: 1セッション
+- 子: `searchSubagent-*` 2セッション
+- 非キャッシュ入力: 33,257
+- cacheR: 44,837
+- 出力: 1,125
+- 合計: 0.8570538 AI Credits
+- 再収集: `+0 new, ~0 updated, 4 unchanged`
 
 ## Windowsで今回やりたいこと
 
@@ -102,7 +106,7 @@ VS CodeのGitHub Copilot Chatでサブエージェントを使った場合、親
 1. `npm test` が成功する。Windows専用パステストはskipされず成功する。
 2. E2Eの最後に `Windows Copilot E2E passed.` が表示される。
 3. 結果JSONの `ok` が `true` である。
-4. `chatOnlyChecked >= 1`。これはシングルエージェントが検算されたことを示す（フィールド名は旧形式との互換のため維持。現行版の `main.jsonl` 形式も対象）。
+4. `singleAgentsChecked >= 1`。`chatOnlyChecked`も旧形式との互換のため同じ判定結果を保持する。
 5. `childrenChecked >= 2`。これは同じ親に属する2つ以上のサブエージェントが検算されたことを示す。
 6. 検算対象の全セッションで、DBのin / cacheR / out / AI Creditsが生ログから直接計算した値と一致する。
 7. 検算対象の全セッションで `cost_source = actual`、`metric_scope = own`、`estimated = 0` である。
@@ -169,10 +173,11 @@ aimetが親・子それぞれの正確なトークン数とAI Creditsを検算�
 git fetch origin
 git switch codex/copilot-accounting-fix
 git pull --ff-only
-git rev-parse --short HEAD
+git rev-parse HEAD
+git rev-parse origin/codex/copilot-accounting-fix
 ```
 
-最後の出力が `9d677f7` またはそれより新しいコミットであることを確認します。このコミット自体がまだリモートにない場合は、作業依頼者にpush済みか確認し、古いブランチのまま検証を続けないでください。
+最後の2つのコミットIDが完全に一致することを確認します。一致しない場合は、古いブランチのまま検証を続けず、`git status --short`で未コミット変更がないことを確認してから再度`git pull --ff-only`を実行してください。
 
 まだcloneしていない場合は、作業したいフォルダで次を実行します。
 
@@ -243,7 +248,7 @@ Windows Copilot E2E passed. Result: C:\Users\...\AppData\Local\Temp\...\windows-
 +0 new, ~0 updated
 ```
 
-結果JSONの `ok` が `true`、`chatOnlyChecked` が1以上、`childrenChecked` が2以上であれば、シングルとマルチの両方を検証できています。
+結果JSONの `ok` が `true`、`singleAgentsChecked` が1以上、`childrenChecked` が2以上であれば、シングルとマルチの両方を検証できています。
 
 ## 7. 実行後に共有するもの
 
@@ -263,7 +268,7 @@ AIは、成功・失敗のどちらでも次の形式で報告してください
 【環境】Windowsバージョン、VS Code種別・バージョン、Node.jsバージョン
 【リポジトリ】ブランチ名、HEADコミット
 【自動テスト】npm testの成功数・失敗数・skip数
-【E2E】ok、sessionsChecked、parentsChecked、chatOnlyChecked、childrenChecked
+【E2E】ok、sessionsChecked、parentsChecked、singleAgentsChecked、chatOnlyChecked、childrenChecked
 【合計値】input、cacheRead、output、AI Credits
 【冪等性】2回目のcollect結果
 【結果ファイル】windows-copilot-e2e.jsonのパス
@@ -295,11 +300,11 @@ npm run test:e2e:copilot-windows
 2. Agent modeと `agent/runSubagent` ツールが利用できるか
 3. `github.copilot.chat.agentDebugLog.fileLogging.enabled` が有効か（従来版では `agentDebugLog.enabled` も有効か）
 4. VS CodeのChat画面にエラーや確認待ちが出ていないか
-5. 次のコマンドで `main.jsonl` と `runSubagent-*.jsonl` が生成されているか
+5. 次のコマンドで `main.jsonl` と子ログ（`runSubagent-*` / `searchSubagent-*`）が生成されているか
 
 ```powershell
 Get-ChildItem "$env:APPDATA\Code\User" -Recurse -File |
-  Where-Object { $_.Name -eq 'main.jsonl' -or $_.Name -like 'runSubagent-*.jsonl' } |
+  Where-Object { $_.Name -eq 'main.jsonl' -or $_.Name -match '^(runSubagent|searchSubagent)-.*\.jsonl$' } |
   Select-Object FullName, Length, LastWriteTime
 ```
 

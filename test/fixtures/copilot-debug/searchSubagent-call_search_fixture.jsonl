@@ -1,0 +1,2 @@
+{"v":1,"ts":1783000003000,"dur":0,"sid":"call_search_fixture","type":"session_start","name":"session_start","spanId":"search-start","attrs":{"parentSessionId":"parent-session-1","label":"searchSubagent","copilotVersion":"0.62.0"}}
+{"v":1,"ts":1783000004000,"dur":1000,"sid":"call_search_fixture","type":"llm_request","name":"chat:copilot-search-a","spanId":"search-request","attrs":{"inputTokens":100,"outputTokens":10,"cachedTokens":80,"copilotUsageNanoAiu":0,"model":"copilot-search-a"}}

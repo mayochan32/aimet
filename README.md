@@ -15,7 +15,7 @@
 | Claude Code | `~/.claude/projects/**/*.jsonl` | 実測（in / out / cacheR / cacheW、1h/5mキャッシュ内訳） | ✅ |
 | Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl` | 実測（in / cached / out / reasoning）＋レート制限時系列 | ✅ |
 | GitHub Copilot (VS Code Chat) | `workspaceStorage/<hash>/chatSessions/*.jsonl` + `workspaceStorage`（旧）または `globalStorage`（現行）の `debug-logs/<uuid>/main.jsonl` | 実測（in / cached / out）＋消費AI Credits | ✅ |
-| GitHub Copilot サブエージェント | `workspaceStorage/<hash>/GitHub.copilot-chat`（旧）または `globalStorage/github.copilot-chat`（現行）の `debug-logs/<親uuid>/runSubagent-*.jsonl` | 実測（in / cached / out / AI Credits、リクエスト単位） | ✅ |
+| GitHub Copilot サブエージェント | `workspaceStorage/<hash>/GitHub.copilot-chat`（旧）または `globalStorage/github.copilot-chat`（現行）の `debug-logs/<親uuid>/*Subagent-*.jsonl` | 実測（in / cached / out / AI Credits、リクエスト単位） | ✅ |
 | GitHub Copilot CLI | `~/.copilot/session-state/<uuid>/events.jsonl` | 実測（**出力トークンのみ**） | ✅ |
 
 > Copilot Chat（VS Code）のスナップショットは `User/workspaceStorage/`、デバッグログは従来版では同じ `workspaceStorage` 配下、現行版では `User/globalStorage/github.copilot-chat/` にあります。aimetはStable / Insiders / VSCodiumの新旧両方を自動探索します。非標準パスは `--dir` または `AIMET_COPILOT_DIR`（Windowsは `;`区切り、macOS/Linuxは `:`区切り）で指定できます。記録されるのは**Chat/エージェントモードの対話のみ**です。
@@ -32,12 +32,38 @@ VS Code Copilot Chatのローカルログは、VS Code／Copilot Chatのバー�
 |---|---|---|---|
 | Chatスナップショット | `User/workspaceStorage/<workspace-hash>/chatSessions/<session-id>.jsonl` | VS CodeのObjectMutationLog。Chat画面のセッションとリクエスト情報 | 対応。より詳細な同一IDの`main.jsonl`がなければ採用 |
 | 親のデバッグログ（従来版） | `User/workspaceStorage/<workspace-hash>/GitHub.copilot-chat/debug-logs/<parent-id>/main.jsonl` | 親自身のLLM呼び出しを記録したスパントレース | Chatスナップショットより優先 |
-| 子のデバッグログ（従来版） | 同じ`debug-logs/<parent-id>/runSubagent-*.jsonl` | サブエージェント自身のLLM呼び出し | 独立した子セッションとして保存 |
+| 子のデバッグログ（従来版） | 同じ`debug-logs/<parent-id>/runSubagent-*.jsonl` | 通常／カスタムサブエージェント自身のLLM呼び出し | 独立した子セッションとして保存 |
 | 親のデバッグログ（現行版） | `User/globalStorage/github.copilot-chat/debug-logs/<parent-id>/main.jsonl` | 親自身のLLM呼び出しを記録したスパントレース | Chatスナップショットより優先 |
-| 子のデバッグログ（現行版） | 同じ`debug-logs/<parent-id>/runSubagent-*.jsonl` | サブエージェント自身のLLM呼び出し | 独立した子セッションとして保存 |
+| 子のデバッグログ（現行版） | 同じ`debug-logs/<parent-id>/runSubagent-*.jsonl`または`searchSubagent-*.jsonl` | 通常／カスタム／検索サブエージェント自身のLLM呼び出し | 親の`child_session_ref`で確認して独立した子セッションとして保存 |
 | 現行版のセッション索引 | `User/globalStorage/github.copilot-chat/session-store.db` | `sessions.id`と`cwd`などのセッションメタデータ | トークン集計には使わず、プロジェクト特定だけに使用 |
 
 現行版では、サブエージェントを使わないシングルエージェントにも`main.jsonl`が生成されることがあります。その場合もChatスナップショット扱いには戻さず、実際のLLM呼び出しとAI Creditsを持つ`main.jsonl`を使用します。
+
+> [!IMPORTANT]
+> **Copilot公式デバッグログ仕様とaimetの判定規則**
+>
+> Microsoftの現行VS Codeソースは、デバッグログの構成を[Copilot troubleshoot skillのData Source節](https://github.com/microsoft/vscode/blob/main/extensions/copilot/assets/prompts/skills/troubleshoot/SKILL.md#data-source)で説明しています。これはCopilot自身がトラブルシュートに使う公式資料です。
+>
+> ```text
+> debug-logs/<parent-session-id>/
+>   main.jsonl
+>   models.json
+>   system_prompt_<n>.json
+>   tools_<n>.json
+>   runSubagent-<agent-name>-<child-id>.jsonl
+>   searchSubagent-<child-id>.jsonl
+>   title-<id>.jsonl
+>   categorization-<id>.jsonl
+>   summarize-<id>.jsonl
+> ```
+>
+> `main.jsonl`は親セッションの会話フローと親自身のLLM呼び出しを持ちます。通常／カスタムサブエージェントは`runSubagent-*`、検索専用サブエージェントは`searchSubagent-*`へ、自分自身のLLM呼び出しを記録します。ファイル名の違いはOS差ではなくサブエージェント種別の違いです。
+>
+> 親は子を起動するたびに`type = child_session_ref`の行を書き、`attrs.childSessionId`へ子ID、`attrs.childLogFile`へ正確な子ファイル名を保存します。aimetはこの参照を親子対応の正式な根拠として採用します。これにより、将来新しいサブエージェント種別とファイル名が追加されても、親が明示的に参照した子を集計できます。古いログや一部だけコピーされたログでは参照がないことがあるため、公式に記載された`runSubagent-*`と`searchSubagent-*`も互換フォールバックとして認識します。
+>
+> `title-*`、`categorization-*`、`summarize-*`はUI用の題名生成・分類・要約であり、作業セッションやサブエージェントではないため集計しません。`models.json`、`system_prompt_*`、`tools_*`もメタデータ／参照資料であり、メトリクス行にはなりません。子として取り込むJSONLは、親から参照され、かつ自身の`session_start.attrs.parentSessionId`と1件以上の`llm_request`を持つものに限定します。
+>
+> なお、これはMicrosoftが現在説明しているデバッグ形式ですが、外部向けの安定APIではありません。VS Code／Copilot更新後はE2Eで形式を再確認し、固定ファイル名ではなく`child_session_ref`を優先することで変更に追随します。
 
 #### OS・VS Code製品ごとの自動探索
 
@@ -79,13 +105,13 @@ aimet collect --tool copilot
 取り込み単位の主キーは`(tool, session_id)`です。Copilot Chatでは同じ親IDのChatスナップショットと`main.jsonl`が見つかる可能性があるため、次の順で情報源を選択します。
 
 ```text
-main.jsonl / runSubagent-*.jsonl（詳細なスパントレース）
+main.jsonl / 親がchild_session_refで参照する子JSONL（詳細なスパントレース）
   > chatSessions/*.jsonl（タスクレベルのスナップショット）
   > その他
 ```
 
 - 同じ親IDのChatスナップショットと`main.jsonl`は足しません。DBには情報量の多い`main.jsonl`由来の親1行だけを残します。
-- `runSubagent-*.jsonl`は子自身のIDで別行にし、`parent_session_id`で親へリンクします。
+- 親が`child_session_ref`で参照する子JSONLは、子自身のIDで別行にし、`parent_session_id`で親へリンクします。
 - 現行の親・子ログは、各セッションが自分自身のLLM呼び出しだけを持つため`metric_scope = own`です。親子合計では親1回＋各子1回だけを加算します。
 - 過去形式で親が子を含む累計値を持つ場合は`metric_scope = tree`とし、子を親子合計へ再加算しません。
 - 各LLMリクエストの`copilotUsageNanoAiu`または`aiu`があれば、実測AI Creditsとして`cost_source = actual`で保存します。欠損したリクエストだけモデル単価によるAPI換算へフォールバックします。
@@ -109,14 +135,14 @@ main.jsonl / runSubagent-*.jsonl（詳細なスパントレース）
 
 #### `globalStorage`ログのプロジェクト特定
 
-現行版の`main.jsonl`と`runSubagent-*.jsonl`は全ワークスペース共通の`globalStorage`に置かれ、ログ自身の`session_start`にworkspaceパスが含まれない場合があります。aimetは収集コマンドを実行したカレントディレクトリや、最後に開いていたVS Codeウィンドウをプロジェクトとして採用しません。それらは対象セッションと無関係な可能性があり、誤った案件へコストを配賦するためです。
+現行版の`main.jsonl`とサブエージェントJSONLは全ワークスペース共通の`globalStorage`に置かれ、ログ自身の`session_start`にworkspaceパスが含まれない場合があります。aimetは収集コマンドを実行したカレントディレクトリや、最後に開いていたVS Codeウィンドウをプロジェクトとして採用しません。それらは対象セッションと無関係な可能性があり、誤った案件へコストを配賦するためです。
 
 代わりに、次の優先順位でセッションごとにプロジェクトを決定します。
 
 | 優先順位 | 情報源 | 判定方法 |
 |---:|---|---|
-| 1 | ログの近くの`workspace.json` | 従来の`workspaceStorage/<hash>`配下なら`folder`または`workspace`の`file://` URIを復号して採用 |
-| 2 | 現行版の`session-store.db` | デバッグログの`session_start.sid`と`sessions.id`を完全一致させ、同じ行の空でない`cwd`を採用 |
+| 1 | 現行版の`session-store.db` | デバッグログの`session_start.sid`と`sessions.id`を完全一致させ、同じ行の空でない`cwd`を採用 |
+| 2 | ログの近くの`workspace.json` | 従来の`workspaceStorage/<hash>`配下なら`folder`または`workspace`の`file://` URIを復号して採用 |
 | 3 | ログ中のファイル参照＋登録済みworkspace | 同じVS Code Userディレクトリの`workspaceStorage/*/workspace.json`を列挙し、構造化ログ中の絶対パスが登録済みworkspace **1つだけ**に属する場合に採用 |
 | 4 | 同じセッションIDの別ログ | `chatSessions`が持つ既知のプロジェクトを、数値の正確な`main.jsonl`行へメタデータとして引き継ぐ |
 | 5 | 親セッション | サブエージェント自身で決まらない場合、`parent_session_id`が指す親の既知プロジェクトを継承 |
@@ -124,9 +150,9 @@ main.jsonl / runSubagent-*.jsonl（詳細なスパントレース）
 
 `session-store.db`では`SELECT id, cwd FROM sessions`相当のメタデータだけを読み取り、`turns`などの会話本文はプロジェクト特定に使用しません。DBは読み取り専用で開き、VS CodeがWALへ新しい情報を書いた場合はキャッシュを更新します。SQLiteファイルがない旧バージョン、スキーマが異なるバージョン、または一時的に読めない状態でも収集全体は失敗させず、次の判定方法へ進みます。
 
-ファイル参照からの補完でも、添付ファイル群の共通親ディレクトリを新しいプロジェクトとして推測することはありません。既に`workspace.json`へ登録されているworkspaceとの一致だけを使い、複数workspaceが同時に一致して曖昧な場合は採用しません。外部ファイルを添付しただけのセッションを別案件へ誤配賦しないためです。
+ファイル参照からの補完でも、添付ファイル群の共通親ディレクトリを新しいプロジェクトとして推測することはありません。既に`workspace.json`へ登録されているworkspaceとの一致だけを使い、複数workspaceが同時に一致して曖昧な場合は採用しません。`userRequest`、プロンプト、メッセージ本文などの自由記述は判定対象外で、構造化されたファイル／URI／ツール引数だけを使用します。文章中で別プロジェクトのパスを言及しただけのセッションを誤配賦しないためです。
 
-同じ親IDについて`chatSessions`と`main.jsonl`の両方がある場合、トークンとAI Creditsは引き続き`main.jsonl`だけを採用します。`chatSessions`から引き継ぐのは不足しているプロジェクト情報だけであり、数値を足したり`main.jsonl`を置き換えたりしません。既に`project = unknown`で保存済みでも、再収集時に確実なプロジェクトが見つかれば、イベント時刻が同じでもプロジェクト列だけを更新します。子が親より先に走査された場合も、親の取り込み後に`unknown`の子を補完します。
+同じ親IDについて`chatSessions`と`main.jsonl`の両方がある場合、トークンとAI Creditsは引き続き`main.jsonl`だけを採用します。`chatSessions`から引き継ぐのは不足しているプロジェクト情報だけであり、数値を足したり`main.jsonl`を置き換えたりしません。DBには内部的に`project_source`も保存し、`unknown`、親継承、構造化参照、`workspace.json`、`session-store.db`の順で根拠を評価します。再収集時により確実な根拠が見つかれば、イベント時刻が同じでもプロジェクト情報だけを更新し、トークンとAI Creditsは変更しません。子が親より先に走査された場合も、親の取り込み後に`unknown`または親継承の子を補完します。
 
 それでも、VS Codeでフォルダーを開かずに作成した空ウィンドウのセッションなど、Copilot自身が`cwd`を記録せず登録済みworkspaceとの対応もない場合は`project = unknown`が正しい結果です。今回のWindows E2Eで使う`code chat -n`も空ウィンドウを明示するため、このケースに該当します。これはinput／cacheRead／output／AI Creditsや親子集計の正確性には影響しませんが、`aimet report --by project`では`unknown`へまとめられます。
 
@@ -138,7 +164,7 @@ main.jsonl / runSubagent-*.jsonl（詳細なスパントレース）
 
 ### マルチエージェント（サブエージェント）の扱い
 
-Copilotの親エージェントが `runSubagent` で子エージェントを起動した場合、親の全LLM呼び出しは `main.jsonl`、子は `runSubagent-*.jsonl` に**スパントレース形式**で保存されます。`chatSessions` の親リクエストは内部の複数LLM呼び出しのトークンを網羅しないため、`main.jsonl` を優先します。
+Copilotの親エージェントが子を起動した場合、親の全LLM呼び出しは`main.jsonl`、通常／カスタムの子は`runSubagent-*`、検索専用の子は`searchSubagent-*`へ**スパントレース形式**で保存されます。親の`child_session_ref.attrs.childLogFile`が正確な子ファイル名を示します。`chatSessions`の親リクエストは内部の複数LLM呼び出しのトークンを網羅しないため、`main.jsonl`を優先します。
 
 aimetは両方を取り込みます：
 
@@ -148,7 +174,7 @@ aimetは両方を取り込みます：
 - 親と子はどちらも自分自身の呼び出し（`own`）だけを保持し、親子合計では各1回だけ加算します
 - `copilotUsageNanoAiu` / `aiu` がある親・子は**実測AI Credits**を使用し、欠損したリクエストだけAPI単価で推定します
 
-> **前提条件**: debug-logs は Copilot Chat のデバッグファイルロギングが有効な場合にのみ書き出されます。現行版では `github.copilot.chat.agentDebugLog.fileLogging.enabled` を有効にします。従来版で `github.copilot.chat.agentDebugLog.enabled` が表示される場合は、互換性のため両方を有効にしてください。ログが出ていない環境では子セッションの消費はディスクから回収できません。Windows PowerShellでは `Get-ChildItem "$env:APPDATA\Code\User" -Recurse -Filter 'runSubagent-*.jsonl'` で新旧両方を確認できます。
+> **前提条件**: debug-logs は Copilot Chat のデバッグファイルロギングが有効な場合にのみ書き出されます。現行版では `github.copilot.chat.agentDebugLog.fileLogging.enabled` を有効にします。従来版で`github.copilot.chat.agentDebugLog.enabled`が表示される場合は、互換性のため両方を有効にしてください。ログが出ていない環境では子セッションの消費はディスクから回収できません。Windows PowerShellでは`Get-ChildItem "$env:APPDATA\Code\User" -Recurse -Filter '*.jsonl' | Where-Object { $_.Name -match '^(runSubagent|searchSubagent)-' }`で公式に記載された両形式を確認できます。
 
 ## インストール
 
@@ -191,15 +217,17 @@ npm run test:e2e:copilot-windows
 
 VS CodeとCopilot拡張は自動更新されるため、将来の再検証では上表のコマンドを再実行し、新しい値とログ形式の差を記録してください。特に`globalStorage`、`session-store.db`、デバッグ設定名はバージョン依存として扱います。
 
+同じく2026-08-22に、macOS 26.6.2（arm64）のVS Code Stable `1.134.0`／同梱Copilot `0.62.0` build `1`が作成した現行`globalStorage`ログでも再検証しました。シングル親1件、マルチ親1件、`searchSubagent-*`の子2件を独立検算器と照合し、非キャッシュ入力`33,257`、cacheR `44,837`、出力`1,125`、合計`0.8570538 AI Credits`が一致しました。同じログの再収集は`+0 new, ~0 updated, 4 unchanged`で、子の見落とし・二重計上とも発生していません。
+
 **`test/parsers.test.js` — 各ツールパーサの正しさ**
 
 - **Claude**: assistantレコードの `usage` を合計し、`in` / `out` / `cacheR` / `cacheW` が期待値になること。リトライ/ストリーミングで**同じmessage IDが重複しても二重計上せず**、ターン数も過大計上しないこと。途中に壊れたJSONL行があっても無視して処理を続けること。
 - **Claude（未知モデル）**: 単価表にないモデルはコストを **`0`ではなく `null`** にすること。
 - **Codex**: `token_count` の累積値から**最大値**を採用し、`input_tokens` から `cached_input_tokens` を差し引いて非キャッシュ入力に分離すること。reasoningトークンも取得すること。
 - **Codex（モデル不明）**: 既定単価にフォールバックしつつ、単価が推定であることを **`estimated: true`** で明示すること。
-- **Copilot（Chat）**: ObjectMutationLogの `Set` / `Push` / `Delete` を順番どおり復元できること。`main.jsonl` と `runSubagent-*` はスパンIDで重複排除し、親子のトークンとnano-AIUが生ログの値に一致すること。
+- **Copilot（Chat）**: ObjectMutationLogの`Set` / `Push` / `Delete`を順番どおり復元できること。`main.jsonl`と`child_session_ref`で参照された各子JSONLはスパンIDで重複排除し、親子のトークンとnano-AIUが生ログの値に一致すること。
 - **Copilot（親子集計）**: `main.jsonl` を同じIDの `chatSessions` より優先し、親と子を各1回だけ加算すること。実ログから匿名化したgolden fixtureで **22.0478895 AI Credits** と正確なトークン数を固定値照合すること。
-- **Copilot（プロジェクト特定）**: 現行`globalStorage`ログを同じセッションIDの`session-store.db.sessions.cwd`へ結び付けること。`main.jsonl`の数値を保ったまま`chatSessions`の既知プロジェクトだけを補完し、サブエージェントが親のプロジェクトを継承すること。
+- **Copilot（プロジェクト特定）**: 現行`globalStorage`ログを同じセッションIDの`session-store.db.sessions.cwd`へ結び付けること。自由記述中のパスを帰属根拠にせず、より確実な`project_source`へ更新しても`main.jsonl`の数値を保ち、サブエージェントが親のプロジェクトを継承すること。
 - **Copilot CLI**: 出力トークンを合計しターン数を数える一方、**入力トークンは未計測（`null`）**、コストも算出不可の **`null`** になること。壊れた行は無視すること。
 
 **`test/store.test.js` — 保存と冪等性**
@@ -211,7 +239,7 @@ VS CodeとCopilot拡張は自動更新されるため、将来の再検証では
 **`test/paths.test.js` — macOS / Windows互換性**
 
 - `%APPDATA%`、Windowsのフォールバック、Stable / Insiders / VSCodium、新旧の `workspaceStorage` / `globalStorage`、`AIMET_COPILOT_DIR`の `;` 区切り、Windows `file://` URIを検証します。
-- `session-store.db`のセッションID完全一致と、ログ中のパスが登録済みworkspace 1件だけに一致する場合の安全な補完を検証します。
+- `session-store.db`のセッションID完全一致、構造化されたログ中のパスだけを使う安全な補完、自由記述の除外、より高信頼なプロジェクト根拠へのメタデータ限定更新を検証します。
 - CIのWindowsジョブでは、`--dir` なしの自動探索から取り込みまで実行します。
 
 **`test/security.test.js` — レビュー指摘の再発防止**
@@ -624,13 +652,13 @@ cost = ( input × 入力単価
 
 **GitHub Copilot Chat — 実測AI Credits優先、API換算はリクエスト単位のフォールバック**。`main.jsonl` の各LLMスパンにある `copilotUsageNanoAiu` / `aiu` を合計し、AI Creditsを $0.01/クレジットで表示します。`main.jsonl` がない場合は `chatSessions` の `copilotCredits` とトークンを使います。AI Creditsが欠損したリクエストだけ、実測トークン×resolvedModel単価でAPI換算し、全件実測は `actual`、一部フォールバックは `mixed`、全件フォールバックは `estimated` と区別します。
 
-**Copilotサブエージェント — トークンとAI Creditsをリクエスト単位で実測**。`runSubagent-*.jsonl` のLLMスパンから in / cached / out とnano-AIUを取得します。同じ `spanId` は1回だけ数え、親は `main.jsonl` の自分のスパン、子は各 `runSubagent-*` の自分のスパンだけを持つため、親子合計で二重計上しません。AI Credits欠損時のみ、Chatと同じルールでそのリクエストをAPI換算します。
+**Copilotサブエージェント — トークンとAI Creditsをリクエスト単位で実測**。親の`child_session_ref`で参照された子JSONL（`runSubagent-*`、`searchSubagent-*`など）のLLMスパンからin / cached / outとnano-AIUを取得します。同じ`spanId`は1回だけ数え、親は`main.jsonl`の自分のスパン、子は各子JSONLの自分のスパンだけを持つため、親子合計で二重計上しません。AI Credits欠損時のみ、Chatと同じルールでそのリクエストをAPI換算します。
 
 **Copilot CLI — コストは出さない（n/a）**。ログに出力トークンしか記録されず、コストの大半を占める入力トークンが不明です。出力だけで計算した金額は大幅な過小評価になるため、aimetは**誠実にコストをnull（表示 `-`、セッション詳細では `n/a`）**とし、0円として合算に紛れ込ませません。取得できる出力トークン・時間・ターン数は工数指標として利用できます。
 
 ### 精度に関する注意
 
-- **Copilotの `main.jsonl` / `runSubagent-*` がある場合、キャッシュ内訳とAI Creditsをともに実測できます**。debug-logsがないChatセッションは `chatSessions` に記録された粒度に制限されます。cacheWが `-` のOpenAI系は課金項目自体が存在しないため影響はありません。
+- **Copilotの`main.jsonl`と参照された子JSONLがある場合、キャッシュ内訳とAI Creditsをともに実測できます**。debug-logsがないChatセッションは`chatSessions`に記録された粒度に制限されます。cacheWが`-`のOpenAI系は課金項目自体が存在しないため影響はありません。
 - 単価表が古いとコストがずれます。重要な集計の前に[Anthropic](https://platform.claude.com/docs/en/about-claude/pricing)・[OpenAI](https://openai.com/api/pricing/)の最新単価と `src/pricing.ts` を照合し、必要なら `~/.aimet/pricing.json` で上書きしてください。特に `gpt-5.3` / `gpt-5.4` 系の内蔵単価は近縁モデルからの推定値です
 - バッチ割引、優先スループット課金、サーバーツール（Web検索等）の従量課金は含みません
 - Codexの累積トークンはセッション途中のコンテキスト圧縮（compaction）後も引き継がれる前提です。異常に大きい値が出た場合は `aimet detail` の `tokenTimeline` で推移を確認してください
