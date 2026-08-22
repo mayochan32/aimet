@@ -2,7 +2,7 @@
 
 **Claude Code / Codex / GitHub Copilot のローカルセッションログから、AIエージェント開発にかかった時間・トークン数・API換算コストを採取するメトリクスツール。**
 
-チームの管理API（組織機能）を使わず、各ツールが手元に残すセッションログ（JSONL）だけを情報源にします。採取したデータはプロジェクトマネジメントの数値データ（工数見積もり、案件別コスト配賦、モデル選定の判断材料など）として利用できます。
+チームの管理API（組織機能）を使わず、各ツールが手元に残すセッションログとローカル索引だけを情報源にします。計測値はJSONLから取得し、現行Copilotのプロジェクト特定に限ってローカルの`session-store.db`も参照します。採取したデータはプロジェクトマネジメントの数値データ（工数見積もり、案件別コスト配賦、モデル選定の判断材料など）として利用できます。
 
 - 依存パッケージゼロ（Node.js 22.5+ の `node:sqlite` を使用）
 - データは `~/.aimet/metrics.db` （SQLite）に蓄積
@@ -14,13 +14,127 @@
 |---|---|---|---|
 | Claude Code | `~/.claude/projects/**/*.jsonl` | 実測（in / out / cacheR / cacheW、1h/5mキャッシュ内訳） | ✅ |
 | Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl` | 実測（in / cached / out / reasoning）＋レート制限時系列 | ✅ |
-| GitHub Copilot (VS Code Chat) | `<userData>/User/workspaceStorage/<hash>/chatSessions/*.jsonl` + `debug-logs/<uuid>/main.jsonl` | 実測（in / cached / out）＋消費AI Credits | ✅ |
-| GitHub Copilot サブエージェント | `<userData>/User/workspaceStorage/<hash>/GitHub.copilot-chat/debug-logs/<親uuid>/runSubagent-*.jsonl` | 実測（in / cached / out / AI Credits、リクエスト単位） | ✅ |
+| GitHub Copilot (VS Code Chat) | `workspaceStorage/<hash>/chatSessions/*.jsonl` + `workspaceStorage`（旧）または `globalStorage`（現行）の `debug-logs/<uuid>/main.jsonl` | 実測（in / cached / out）＋消費AI Credits | ✅ |
+| GitHub Copilot サブエージェント | `workspaceStorage/<hash>/GitHub.copilot-chat`（旧）または `globalStorage/github.copilot-chat`（現行）の `debug-logs/<親uuid>/runSubagent-*.jsonl` | 実測（in / cached / out / AI Credits、リクエスト単位） | ✅ |
 | GitHub Copilot CLI | `~/.copilot/session-state/<uuid>/events.jsonl` | 実測（**出力トークンのみ**） | ✅ |
 
-> Copilot Chat（VS Code）のログはmacOSでは `~/Library/Application Support/Code/User/workspaceStorage/`、Windowsでは `%APPDATA%\Code\User\workspaceStorage` にあります。Stable / Insiders / VSCodiumを自動探索し、非標準パスは `--dir` または `AIMET_COPILOT_DIR`（Windowsは `;`区切り、macOS/Linuxは `:`区切り）で指定できます。記録されるのは**Chat/エージェントモードの対話のみ**です。
+> Copilot Chat（VS Code）のスナップショットは `User/workspaceStorage/`、デバッグログは従来版では同じ `workspaceStorage` 配下、現行版では `User/globalStorage/github.copilot-chat/` にあります。aimetはStable / Insiders / VSCodiumの新旧両方を自動探索します。非標準パスは `--dir` または `AIMET_COPILOT_DIR`（Windowsは `;`区切り、macOS/Linuxは `:`区切り）で指定できます。記録されるのは**Chat/エージェントモードの対話のみ**です。
 >
 > **Copilot CLI（`@github/copilot`）の注意**: レポート上は `copilot`（Chat版）と区別するため **`copilot-cli`** という別ツールとして集計します。CLIのログは**出力トークンしか記録しない**（入力・キャッシュのフィールドが存在しない）ため、`in` / `cacheR` / `cacheW` は **`-`（null）**、コストも **`-`（null）** になります。取得できるのは出力トークン・実行時間・ターン数・モデル・プロジェクトです。
+
+### Copilot Chatログの探索と集計
+
+VS Code Copilot Chatのローカルログは、VS Code／Copilot Chatのバージョンによって1か所ではなく、複数の場所に分かれて保存されます。さらに、同じ親セッションについて情報量の異なるログが複数存在する場合があります。aimetは保存場所ごとの数値を単純合算せず、次の探索・選択・親子集計規則を使います。
+
+#### ログの種類と保存場所
+
+| ログ | 主な保存場所 | 内容 | aimetでの扱い |
+|---|---|---|---|
+| Chatスナップショット | `User/workspaceStorage/<workspace-hash>/chatSessions/<session-id>.jsonl` | VS CodeのObjectMutationLog。Chat画面のセッションとリクエスト情報 | 対応。より詳細な同一IDの`main.jsonl`がなければ採用 |
+| 親のデバッグログ（従来版） | `User/workspaceStorage/<workspace-hash>/GitHub.copilot-chat/debug-logs/<parent-id>/main.jsonl` | 親自身のLLM呼び出しを記録したスパントレース | Chatスナップショットより優先 |
+| 子のデバッグログ（従来版） | 同じ`debug-logs/<parent-id>/runSubagent-*.jsonl` | サブエージェント自身のLLM呼び出し | 独立した子セッションとして保存 |
+| 親のデバッグログ（現行版） | `User/globalStorage/github.copilot-chat/debug-logs/<parent-id>/main.jsonl` | 親自身のLLM呼び出しを記録したスパントレース | Chatスナップショットより優先 |
+| 子のデバッグログ（現行版） | 同じ`debug-logs/<parent-id>/runSubagent-*.jsonl` | サブエージェント自身のLLM呼び出し | 独立した子セッションとして保存 |
+| 現行版のセッション索引 | `User/globalStorage/github.copilot-chat/session-store.db` | `sessions.id`と`cwd`などのセッションメタデータ | トークン集計には使わず、プロジェクト特定だけに使用 |
+
+現行版では、サブエージェントを使わないシングルエージェントにも`main.jsonl`が生成されることがあります。その場合もChatスナップショット扱いには戻さず、実際のLLM呼び出しとAI Creditsを持つ`main.jsonl`を使用します。
+
+#### OS・VS Code製品ごとの自動探索
+
+`aimet collect`を`--dir`なしで実行すると、まず次のVS Code Userディレクトリを組み立てます。
+
+| OS | Userディレクトリの基点 |
+|---|---|
+| Windows | `%APPDATA%\<product>\User`（`APPDATA`がなければユーザーホームの`AppData\Roaming`） |
+| macOS | `~/Library/Application Support/<product>/User` |
+| Linux | `${XDG_CONFIG_HOME:-~/.config}/<product>/User` |
+
+`<product>`は`Code`、`Code - Insiders`、`VSCodium`の3種類です。それぞれについて次の2ルートを**両方**、再帰的に探索します。
+
+```text
+User/workspaceStorage
+User/globalStorage/github.copilot-chat
+```
+
+このため、従来版と現行版のログが同じPCに残っていても、利用者がVS Codeのバージョンを指定する必要はありません。アクセスできない、または存在しないディレクトリは読み飛ばします。
+
+非標準のuser-data-dirを使う場合は、`AIMET_COPILOT_DIR`で探索ルートを**追加**できます。複数指定も可能です。
+
+```powershell
+# Windows: セミコロン区切り
+$env:AIMET_COPILOT_DIR = 'D:\VSCodeData\User;E:\VSCodiumData\User'
+aimet collect --tool copilot
+```
+
+```bash
+# macOS / Linux: コロン区切り
+export AIMET_COPILOT_DIR='/path/to/code/User:/path/to/codium/User'
+aimet collect --tool copilot
+```
+
+`--dir <path>`を指定した場合は、その実行に限って自動探索ルートを置き換え、指定ディレクトリだけを探索します。調査用にログを隔離したフォルダや、E2Eで採取したログだけを読みたい場合に使用します。
+
+#### 同じセッションを二重計上しない仕組み
+
+取り込み単位の主キーは`(tool, session_id)`です。Copilot Chatでは同じ親IDのChatスナップショットと`main.jsonl`が見つかる可能性があるため、次の順で情報源を選択します。
+
+```text
+main.jsonl / runSubagent-*.jsonl（詳細なスパントレース）
+  > chatSessions/*.jsonl（タスクレベルのスナップショット）
+  > その他
+```
+
+- 同じ親IDのChatスナップショットと`main.jsonl`は足しません。DBには情報量の多い`main.jsonl`由来の親1行だけを残します。
+- `runSubagent-*.jsonl`は子自身のIDで別行にし、`parent_session_id`で親へリンクします。
+- 現行の親・子ログは、各セッションが自分自身のLLM呼び出しだけを持つため`metric_scope = own`です。親子合計では親1回＋各子1回だけを加算します。
+- 過去形式で親が子を含む累計値を持つ場合は`metric_scope = tree`とし、子を親子合計へ再加算しません。
+- 各LLMリクエストの`copilotUsageNanoAiu`または`aiu`があれば、実測AI Creditsとして`cost_source = actual`で保存します。欠損したリクエストだけモデル単価によるAPI換算へフォールバックします。
+- 同じファイルや同じセッションを再度取り込んでも、最終イベント時刻と情報源の優先順位を比較して`skipped`にします。2回目の`collect`でDB行や合計が増えることはありません。
+
+つまり、複数の保存先を探索することは「すべての数値を合算する」という意味ではありません。複数候補からセッションごとに最も正確な情報源を選び、その後で親子関係に従って各セッションを1回だけ集計します。
+
+#### デバッグファイルロギングの設定
+
+現行版では次を有効にし、VS Codeのウィンドウを再読み込みまたは再起動します。
+
+```json
+{
+  "github.copilot.chat.agentDebugLog.fileLogging.enabled": true
+}
+```
+
+従来版で`github.copilot.chat.agentDebugLog.enabled`も設定画面に表示される場合は、互換性のため両方を有効にします。現行版では旧設定は非推奨で、`fileLogging.enabled`へ統合されています。詳細は[Microsoft公式Copilot設定定義](https://github.com/microsoft/vscode/blob/main/extensions/copilot/package.nls.json)を参照してください。
+
+デバッグログが生成されない場合、Chatスナップショットから取得できる範囲は集計できますが、親内部の全LLM呼び出しやサブエージェントの正確なトークン・AI Creditsは復元できません。
+
+#### `globalStorage`ログのプロジェクト特定
+
+現行版の`main.jsonl`と`runSubagent-*.jsonl`は全ワークスペース共通の`globalStorage`に置かれ、ログ自身の`session_start`にworkspaceパスが含まれない場合があります。aimetは収集コマンドを実行したカレントディレクトリや、最後に開いていたVS Codeウィンドウをプロジェクトとして採用しません。それらは対象セッションと無関係な可能性があり、誤った案件へコストを配賦するためです。
+
+代わりに、次の優先順位でセッションごとにプロジェクトを決定します。
+
+| 優先順位 | 情報源 | 判定方法 |
+|---:|---|---|
+| 1 | ログの近くの`workspace.json` | 従来の`workspaceStorage/<hash>`配下なら`folder`または`workspace`の`file://` URIを復号して採用 |
+| 2 | 現行版の`session-store.db` | デバッグログの`session_start.sid`と`sessions.id`を完全一致させ、同じ行の空でない`cwd`を採用 |
+| 3 | ログ中のファイル参照＋登録済みworkspace | 同じVS Code Userディレクトリの`workspaceStorage/*/workspace.json`を列挙し、構造化ログ中の絶対パスが登録済みworkspace **1つだけ**に属する場合に採用 |
+| 4 | 同じセッションIDの別ログ | `chatSessions`が持つ既知のプロジェクトを、数値の正確な`main.jsonl`行へメタデータとして引き継ぐ |
+| 5 | 親セッション | サブエージェント自身で決まらない場合、`parent_session_id`が指す親の既知プロジェクトを継承 |
+| 6 | 特定不能 | 上記の確実な対応がなければ`unknown`のまま保存 |
+
+`session-store.db`では`SELECT id, cwd FROM sessions`相当のメタデータだけを読み取り、`turns`などの会話本文はプロジェクト特定に使用しません。DBは読み取り専用で開き、VS CodeがWALへ新しい情報を書いた場合はキャッシュを更新します。SQLiteファイルがない旧バージョン、スキーマが異なるバージョン、または一時的に読めない状態でも収集全体は失敗させず、次の判定方法へ進みます。
+
+ファイル参照からの補完でも、添付ファイル群の共通親ディレクトリを新しいプロジェクトとして推測することはありません。既に`workspace.json`へ登録されているworkspaceとの一致だけを使い、複数workspaceが同時に一致して曖昧な場合は採用しません。外部ファイルを添付しただけのセッションを別案件へ誤配賦しないためです。
+
+同じ親IDについて`chatSessions`と`main.jsonl`の両方がある場合、トークンとAI Creditsは引き続き`main.jsonl`だけを採用します。`chatSessions`から引き継ぐのは不足しているプロジェクト情報だけであり、数値を足したり`main.jsonl`を置き換えたりしません。既に`project = unknown`で保存済みでも、再収集時に確実なプロジェクトが見つかれば、イベント時刻が同じでもプロジェクト列だけを更新します。子が親より先に走査された場合も、親の取り込み後に`unknown`の子を補完します。
+
+それでも、VS Codeでフォルダーを開かずに作成した空ウィンドウのセッションなど、Copilot自身が`cwd`を記録せず登録済みworkspaceとの対応もない場合は`project = unknown`が正しい結果です。今回のWindows E2Eで使う`code chat -n`も空ウィンドウを明示するため、このケースに該当します。これはinput／cacheRead／output／AI Creditsや親子集計の正確性には影響しませんが、`aimet report --by project`では`unknown`へまとめられます。
+
+この実装が参照する仕様・実装情報は次のとおりです。
+
+- [VS Code公式ソース: Copilotセッション検索（ローカルSQLiteの`sessions`、`session_files`など）](https://github.com/microsoft/vscode/blob/main/extensions/copilot/assets/prompts/skills/chronicle/SKILL.md)
+- [VS Code公式ソース: 同梱Copilot拡張の`package.json`](https://github.com/microsoft/vscode/blob/main/extensions/copilot/package.json)
+- [Node.js公式: `node:sqlite` / `DatabaseSync`](https://nodejs.org/api/sqlite.html)
 
 ### マルチエージェント（サブエージェント）の扱い
 
@@ -34,7 +148,7 @@ aimetは両方を取り込みます：
 - 親と子はどちらも自分自身の呼び出し（`own`）だけを保持し、親子合計では各1回だけ加算します
 - `copilotUsageNanoAiu` / `aiu` がある親・子は**実測AI Credits**を使用し、欠損したリクエストだけAPI単価で推定します
 
-> **前提条件**: debug-logs は Copilot Chat のデバッグファイルロギングが有効な場合にのみ書き出されます（バージョン・実験フラグにより挙動が変わる報告あり）。ログが出ていない環境では子セッションの消費はディスクから回収できません。macOS/Linuxでは `find <userData>/User/workspaceStorage -path '*debug-logs*' -name 'runSubagent-*.jsonl'`、Windows PowerShellでは `Get-ChildItem <userData>\User\workspaceStorage -Recurse -Filter 'runSubagent-*.jsonl'` で存在確認できます。
+> **前提条件**: debug-logs は Copilot Chat のデバッグファイルロギングが有効な場合にのみ書き出されます。現行版では `github.copilot.chat.agentDebugLog.fileLogging.enabled` を有効にします。従来版で `github.copilot.chat.agentDebugLog.enabled` が表示される場合は、互換性のため両方を有効にしてください。ログが出ていない環境では子セッションの消費はディスクから回収できません。Windows PowerShellでは `Get-ChildItem "$env:APPDATA\Code\User" -Recurse -Filter 'runSubagent-*.jsonl'` で新旧両方を確認できます。
 
 ## インストール
 
@@ -60,6 +174,23 @@ npm run test:e2e:copilot-windows
 
 詳細な準備、成功判定、失敗時の確認方法は [Windows実機Copilot E2E手順](docs/windows-copilot-e2e.md) を参照してください。
 
+#### 今回のWindows実機検証環境
+
+以下は、このブランチのCopilotログ探索・親子集計・プロジェクト特定を実測した環境です。最低動作要件ではなく、再現時に比較するためのスナップショットです。確認日は**2026-08-22（日本時間）**です。
+
+| 項目 | 検証値 | ローカルでの確認元 | 公式情報 |
+|---|---|---|---|
+| OS | Windows 11 Pro 25H2、x64、OS build `26200.8973` | Windows `CurrentVersion`レジストリの`DisplayVersion`、`CurrentBuildNumber`、`UBR`。旧互換の`ProductName`は`Windows 10 Pro`と表示されるためbuild番号で判定 | [Microsoft: Windows 11 release information](https://learn.microsoft.com/en-us/windows/release-health/windows11-release-information) |
+| VS Code | Visual Studio Code Stable `1.134.0`、x64、commit `110a328ea54b42367b803ec53ee0bf52ef26b419` | `code --version`およびインストール済み`product.json`の`quality = stable` | [VS Code 1.134 release notes](https://code.visualstudio.com/updates/v1_134)、[VS Code CLI](https://code.visualstudio.com/docs/configure/command-line) |
+| GitHub Copilot拡張 | 同梱版 `0.62.0` build `1`、VS Code engine `^1.134.0` | VS Codeインストール配下の`resources/app/extensions/copilot/package.json` | [Microsoft公式ソース: Copilot package.json](https://github.com/microsoft/vscode/blob/main/extensions/copilot/package.json) |
+| Node.js | `v24.11.1`、x64 | `node --version` | [Node.js 24.11.1 release](https://nodejs.org/en/blog/release/v24.11.1) |
+| npm | `11.6.2` | `npm --version` | [npm CLI v11 documentation](https://docs.npmjs.com/cli/v11/commands/npm/) |
+| Windows PowerShell | `5.1.26100.8972` | `$PSVersionTable.PSVersion` | [Microsoft: Windows PowerShell 5.1](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_windows_powershell_5.1?view=powershell-5.1) |
+| Git for Windows | `2.46.0.windows.1` | `git --version` | [Git for Windows公式サイト](https://gitforwindows.org/) |
+| aimet | branch `codex/copilot-accounting-fix`、検証開始HEAD `5cfa0c5` | `git branch --show-current`、`git rev-parse --short HEAD` | [mayochan32/aimet](https://github.com/mayochan32/aimet) |
+
+VS CodeとCopilot拡張は自動更新されるため、将来の再検証では上表のコマンドを再実行し、新しい値とログ形式の差を記録してください。特に`globalStorage`、`session-store.db`、デバッグ設定名はバージョン依存として扱います。
+
 **`test/parsers.test.js` — 各ツールパーサの正しさ**
 
 - **Claude**: assistantレコードの `usage` を合計し、`in` / `out` / `cacheR` / `cacheW` が期待値になること。リトライ/ストリーミングで**同じmessage IDが重複しても二重計上せず**、ターン数も過大計上しないこと。途中に壊れたJSONL行があっても無視して処理を続けること。
@@ -68,6 +199,7 @@ npm run test:e2e:copilot-windows
 - **Codex（モデル不明）**: 既定単価にフォールバックしつつ、単価が推定であることを **`estimated: true`** で明示すること。
 - **Copilot（Chat）**: ObjectMutationLogの `Set` / `Push` / `Delete` を順番どおり復元できること。`main.jsonl` と `runSubagent-*` はスパンIDで重複排除し、親子のトークンとnano-AIUが生ログの値に一致すること。
 - **Copilot（親子集計）**: `main.jsonl` を同じIDの `chatSessions` より優先し、親と子を各1回だけ加算すること。実ログから匿名化したgolden fixtureで **22.0478895 AI Credits** と正確なトークン数を固定値照合すること。
+- **Copilot（プロジェクト特定）**: 現行`globalStorage`ログを同じセッションIDの`session-store.db.sessions.cwd`へ結び付けること。`main.jsonl`の数値を保ったまま`chatSessions`の既知プロジェクトだけを補完し、サブエージェントが親のプロジェクトを継承すること。
 - **Copilot CLI**: 出力トークンを合計しターン数を数える一方、**入力トークンは未計測（`null`）**、コストも算出不可の **`null`** になること。壊れた行は無視すること。
 
 **`test/store.test.js` — 保存と冪等性**
@@ -78,7 +210,8 @@ npm run test:e2e:copilot-windows
 
 **`test/paths.test.js` — macOS / Windows互換性**
 
-- `%APPDATA%`、Windowsのフォールバック、Stable / Insiders / VSCodium、`AIMET_COPILOT_DIR`の `;` 区切り、Windows `file://` URIを検証します。
+- `%APPDATA%`、Windowsのフォールバック、Stable / Insiders / VSCodium、新旧の `workspaceStorage` / `globalStorage`、`AIMET_COPILOT_DIR`の `;` 区切り、Windows `file://` URIを検証します。
+- `session-store.db`のセッションID完全一致と、ログ中のパスが登録済みworkspace 1件だけに一致する場合の安全な補完を検証します。
 - CIのWindowsジョブでは、`--dir` なしの自動探索から取り込みまで実行します。
 
 **`test/security.test.js` — レビュー指摘の再発防止**

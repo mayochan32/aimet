@@ -25,7 +25,13 @@ export function vscodeUserDirs(
   return products.map((product) => p.join(base, product, 'User'));
 }
 
-/** Copilot workspaceStorage roots, including optional explicit overrides. */
+/**
+ * Copilot log roots, including optional explicit overrides.
+ *
+ * Chat snapshots remain under workspaceStorage. Recent Copilot builds write
+ * agent debug JSONL to globalStorage instead, while older builds wrote it
+ * below each workspaceStorage hash. Scan both locations during the rollout.
+ */
 export function copilotWorkspaceRoots(
   env: Env = process.env,
   os: NodeJS.Platform = platform(),
@@ -37,6 +43,9 @@ export function copilotWorkspaceRoots(
     .split(pathDelimiter)
     .map((v) => v.trim())
     .filter(Boolean);
-  const detected = vscodeUserDirs(env, os, home).map((dir) => p.join(dir, 'workspaceStorage'));
+  const detected = vscodeUserDirs(env, os, home).flatMap((dir) => [
+    p.join(dir, 'workspaceStorage'),
+    p.join(dir, 'globalStorage', 'github.copilot-chat'),
+  ]);
   return [...new Set([...explicit, ...detected])];
 }

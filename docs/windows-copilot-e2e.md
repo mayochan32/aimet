@@ -102,7 +102,7 @@ VS CodeのGitHub Copilot Chatでサブエージェントを使った場合、親
 1. `npm test` が成功する。Windows専用パステストはskipされず成功する。
 2. E2Eの最後に `Windows Copilot E2E passed.` が表示される。
 3. 結果JSONの `ok` が `true` である。
-4. `chatOnlyChecked >= 1`。これはシングルエージェントが検算されたことを示す。
+4. `chatOnlyChecked >= 1`。これはシングルエージェントが検算されたことを示す（フィールド名は旧形式との互換のため維持。現行版の `main.jsonl` 形式も対象）。
 5. `childrenChecked >= 2`。これは同じ親に属する2つ以上のサブエージェントが検算されたことを示す。
 6. 検算対象の全セッションで、DBのin / cacheR / out / AI Creditsが生ログから直接計算した値と一致する。
 7. 検算対象の全セッションで `cost_source = actual`、`metric_scope = own`、`estimated = 0` である。
@@ -149,15 +149,16 @@ aimetが親・子それぞれの正確なトークン数とAI Creditsを検算�
 
 1. VS Codeを開きます。
 2. `Ctrl+,` でSettingsを開きます。
-3. 次の2項目を検索し、どちらも有効にします。
-   - `github.copilot.chat.agentDebugLog.enabled`
-   - `github.copilot.chat.agentDebugLog.fileLogging.enabled`
+3. `github.copilot.chat.agentDebugLog.fileLogging.enabled` を検索し、有効にします。
+   - 現行版では、この設定だけでデバッグイベントの収集とファイル出力が有効になります。
+   - 従来版で `github.copilot.chat.agentDebugLog.enabled` も表示される場合は、互換性のためそちらも有効にします。現行版では旧設定は非推奨で、`fileLogging.enabled` に統合されています。
 4. Copilot ChatをAgent modeにし、ツール一覧で `agent/runSubagent` が有効であることを確認します。
 5. VS Codeを一度終了して再起動します。
 
-VS Codeの公式設定リファレンスでも、この2つがAgent Debug Logとファイル出力の設定として定義されています。
+現行実装での統合は、Microsoft公式Copilot Chatリポジトリの設定定義にも明記されています。
 
 - [VS Code: AI settings reference](https://code.visualstudio.com/docs/agents/reference/ai-settings#_debugging-settings)
+- [Copilot: current setting and legacy deprecation](https://github.com/microsoft/vscode/blob/main/extensions/copilot/package.nls.json)
 - [VS Code: Subagents](https://code.visualstudio.com/docs/agents/run/subagents)
 
 ## 3. 検証ブランチを取得する
@@ -277,12 +278,12 @@ AIは、成功・失敗のどちらでも次の形式で報告してください
 
 VS Codeを標準の場所にインストールするか、VS Codeのインストーラで `Add to PATH` を有効にします。PowerShellを再起動してから再実行してください。
 
-### `workspaceStorage was not found`
+### `VS Code Copilot log roots were not found`
 
 VS Codeで一度任意のフォルダを開き、Copilot Chatを1回実行してから再試行します。非標準のuser-data-dirを使っている場合は、PowerShellで次を設定してから実行します。
 
 ```powershell
-$env:AIMET_COPILOT_DIR = 'D:\path\to\User\workspaceStorage'
+$env:AIMET_COPILOT_DIR = 'D:\path\to\User'
 npm run test:e2e:copilot-windows
 ```
 
@@ -292,12 +293,12 @@ npm run test:e2e:copilot-windows
 
 1. VS CodeでGitHub Copilotがサインイン済みか
 2. Agent modeと `agent/runSubagent` ツールが利用できるか
-3. 2つのAgent Debug Log設定が有効か
+3. `github.copilot.chat.agentDebugLog.fileLogging.enabled` が有効か（従来版では `agentDebugLog.enabled` も有効か）
 4. VS CodeのChat画面にエラーや確認待ちが出ていないか
 5. 次のコマンドで `main.jsonl` と `runSubagent-*.jsonl` が生成されているか
 
 ```powershell
-Get-ChildItem "$env:APPDATA\Code\User\workspaceStorage" -Recurse -File |
+Get-ChildItem "$env:APPDATA\Code\User" -Recurse -File |
   Where-Object { $_.Name -eq 'main.jsonl' -or $_.Name -like 'runSubagent-*.jsonl' } |
   Select-Object FullName, Length, LastWriteTime
 ```

@@ -8,7 +8,8 @@ import { copilotCliParser } from './copilotcli.js';
 /**
  * Parser registry.
  *   copilot     = GitHub Copilot Chat in VS Code (workspaceStorage/<hash>/chatSessions)
- *                 + exact parent/child spans from GitHub.copilot-chat/debug-logs/<uuid>/
+ *                 + exact parent/child spans from workspaceStorage (legacy)
+ *                   or globalStorage/github.copilot-chat/debug-logs/<uuid>/ (current)
  *                   main.jsonl and runSubagent-*.jsonl. Store prefers main over
  *                   the same-id chat snapshot and links children by parent_session_id.
  *   copilot-cli = GitHub Copilot CLI agent (~/.copilot/session-state/<uuid>/events.jsonl)

@@ -2,7 +2,11 @@ import { basename } from 'node:path';
 import type { Parser, SessionMetrics, TokenUsage } from '../types.js';
 import { costUsd } from '../pricing.js';
 import { jsonlRecords } from './util.js';
-import { projectOf } from './copilot.js';
+import {
+  collectKnownWorkspaceReferences,
+  knownWorkspaceProjects,
+  projectOf,
+} from './copilot.js';
 import { copilotWorkspaceRoots } from '../paths.js';
 
 function finite(value: unknown): number | null {
@@ -14,8 +18,10 @@ function finite(value: unknown): number | null {
 
 /**
  * GitHub Copilot Chat span sessions (multi-agent, VS Code):
- *   <userData>/User/workspaceStorage/<hash>/GitHub.copilot-chat/
- *     debug-logs/<parent-session-uuid>/runSubagent-<Agent>-<callId>.jsonl
+ *   Legacy: <userData>/User/workspaceStorage/<hash>/GitHub.copilot-chat/
+ *             debug-logs/<parent-session-uuid>/runSubagent-<Agent>-<callId>.jsonl
+ *   Current: <userData>/User/globalStorage/github.copilot-chat/
+ *             debug-logs/<parent-session-uuid>/runSubagent-<Agent>-<callId>.jsonl
  *
  * Span-trace format (one span per line):
  *   { v?, ts(ms), dur(ms), sid, type, name, spanId, parentSpanId?, status, attrs }
@@ -67,6 +73,8 @@ export const copilotSubagentParser: Parser = {
     let estimatedRequests = 0;
     let unknownCost = false;
     const seenSpans = new Set<string>();
+    const workspaceProjects = knownWorkspaceProjects(path);
+    const referencedProjects = new Set<string>();
 
     for await (const rec of jsonlRecords(path)) {
       const ts = Number(rec.ts ?? 0);
@@ -76,6 +84,9 @@ export const copilotSubagentParser: Parser = {
         lastTs = Math.max(lastTs, ts + (Number.isFinite(dur) ? dur : 0));
       }
       const attrs = (rec.attrs ?? {}) as Record<string, unknown>;
+      if (workspaceProjects.length > 0) {
+        collectKnownWorkspaceReferences(attrs, workspaceProjects, referencedProjects);
+      }
 
       switch (rec.type) {
         case 'session_start':
@@ -127,11 +138,18 @@ export const copilotSubagentParser: Parser = {
 
     if (!sessionId || requests === 0 || !Number.isFinite(firstTs)) return null;
 
+    const indexedProject = projectOf(path, parentSessionId ?? sessionId);
+    const referencedProject = referencedProjects.size === 1
+      ? [...referencedProjects][0]
+      : 'unknown';
+
     return {
       tool: 'copilot',
       sessionId,
       logPath: path,
-      project: projectOf(path),
+      // Current session-store rows are keyed by the top-level session. Child
+      // span ids are call ids, so resolve them through parentSessionId.
+      project: indexedProject !== 'unknown' ? indexedProject : referencedProject,
       model: `${model || 'unknown'}${parentSessionId && label ? ` (${label})` : ''}`,
       startedAt: new Date(firstTs).toISOString(),
       endedAt: new Date(lastTs).toISOString(),

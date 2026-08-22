@@ -18,6 +18,10 @@ function sourceRank(tool: string, logPath: string): number {
   return 1;
 }
 
+function knownProject(project: string | undefined | null): project is string {
+  return Boolean(project && project.trim() && project !== 'unknown');
+}
+
 export class Store {
   private db: DatabaseSync;
 
@@ -145,12 +149,56 @@ export class Store {
   /** Idempotent upsert keyed by (tool, session_id); skips stale data. */
   upsert(m: SessionMetrics): 'inserted' | 'updated' | 'skipped' {
     const existing = this.db
-      .prepare('SELECT last_event_at, log_path FROM sessions WHERE tool = ? AND session_id = ?')
-      .get(m.tool, m.sessionId) as { last_event_at: string; log_path: string } | undefined;
+      .prepare('SELECT last_event_at, log_path, project FROM sessions WHERE tool = ? AND session_id = ?')
+      .get(m.tool, m.sessionId) as {
+        last_event_at: string;
+        log_path: string;
+        project: string;
+      } | undefined;
+
+    // A child debug span has its own call id, while Copilot's session index is
+    // keyed by the top-level parent id. Inherit only a known parent project.
+    let project = m.project;
+    if (!knownProject(project) && m.parentSessionId) {
+      const parent = this.db
+        .prepare('SELECT project FROM sessions WHERE tool = ? AND session_id = ?')
+        .get(m.tool, m.parentSessionId) as { project: string } | undefined;
+      if (knownProject(parent?.project)) project = parent.project;
+    }
+
     if (existing) {
       const oldRank = sourceRank(m.tool, existing.log_path);
       const newRank = sourceRank(m.tool, m.logPath);
-      if (newRank < oldRank || (newRank === oldRank && existing.last_event_at >= m.lastEventAt)) {
+      const enrichesProject = !knownProject(existing.project) && knownProject(project);
+
+      // A lower-ranked chat snapshot must never replace exact span metrics,
+      // but it may contribute the workspace.json-derived project for the same
+      // session id.
+      if (newRank < oldRank) {
+        if (enrichesProject) {
+          this.db.prepare(
+            `UPDATE sessions SET project = ?, updated_at = ?
+             WHERE tool = ? AND session_id = ?`
+          ).run(project, new Date().toISOString(), m.tool, m.sessionId);
+          this.backfillChildProjects(m.tool, m.sessionId, project);
+          return 'updated';
+        }
+        return 'skipped';
+      }
+
+      // Preserve a known project when a richer main.jsonl supersedes a chat
+      // snapshot that carried the workspace association.
+      if (!knownProject(project) && knownProject(existing.project)) project = existing.project;
+
+      if (newRank === oldRank && existing.last_event_at >= m.lastEventAt) {
+        if (enrichesProject) {
+          this.db.prepare(
+            `UPDATE sessions SET project = ?, updated_at = ?
+             WHERE tool = ? AND session_id = ?`
+          ).run(project, new Date().toISOString(), m.tool, m.sessionId);
+          this.backfillChildProjects(m.tool, m.sessionId, project);
+          return 'updated';
+        }
         return 'skipped';
       }
     }
@@ -175,7 +223,7 @@ export class Store {
            parent_session_id=excluded.parent_session_id`
       )
       .run(
-        m.tool, m.sessionId, m.logPath, m.project, m.model,
+        m.tool, m.sessionId, m.logPath, project, m.model,
         m.startedAt, m.endedAt, m.durationSec, m.activeSec,
         m.tokens.input, m.tokens.output, m.tokens.cacheRead, m.tokens.cacheWrite,
         m.tokens.reasoning, m.costUsd, m.estimated ? 1 : 0,
@@ -184,7 +232,16 @@ export class Store {
         m.turns,
         m.lastEventAt, new Date().toISOString(), m.parentSessionId ?? null
       );
+    if (knownProject(project)) this.backfillChildProjects(m.tool, m.sessionId, project);
     return existing ? 'updated' : 'inserted';
+  }
+
+  /** Fill children that were scanned before their parent without touching metrics. */
+  private backfillChildProjects(tool: string, parentSessionId: string, project: string): void {
+    this.db.prepare(
+      `UPDATE sessions SET project = ?, updated_at = ?
+       WHERE tool = ? AND parent_session_id = ? AND project = 'unknown'`
+    ).run(project, new Date().toISOString(), tool, parentSessionId);
   }
 
   query(sql: string, ...params: unknown[]): Record<string, unknown>[] {

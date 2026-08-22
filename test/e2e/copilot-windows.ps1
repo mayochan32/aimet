@@ -27,50 +27,69 @@ function Find-CodeCommand {
   throw 'VS Code CLI (code/code-insiders/codium) was not found.'
 }
 
-function Find-WorkspaceStorage {
+function Find-CopilotRoots {
+  $roots = @()
   if ($env:AIMET_COPILOT_DIR) {
     foreach ($candidate in $env:AIMET_COPILOT_DIR.Split(';')) {
       if ($candidate.Trim() -and (Test-Path $candidate.Trim())) {
-        return (Resolve-Path $candidate.Trim()).Path
+        $roots += (Resolve-Path $candidate.Trim()).Path
       }
     }
   }
   foreach ($product in @('Code', 'Code - Insiders', 'VSCodium')) {
-    $candidate = Join-Path $env:APPDATA "$product\User\workspaceStorage"
-    if (Test-Path $candidate) { return $candidate }
+    $userDir = Join-Path $env:APPDATA "$product\User"
+    foreach ($candidate in @(
+      (Join-Path $userDir 'workspaceStorage'),
+      (Join-Path $userDir 'globalStorage\github.copilot-chat')
+    )) {
+      if (Test-Path $candidate) { $roots += (Resolve-Path $candidate).Path }
+    }
   }
-  throw 'VS Code workspaceStorage was not found under APPDATA. Set AIMET_COPILOT_DIR for a non-standard location.'
+  $roots = @($roots | Select-Object -Unique)
+  if ($roots.Count -eq 0) {
+    throw 'VS Code Copilot log roots were not found under APPDATA. Set AIMET_COPILOT_DIR for non-standard locations.'
+  }
+  return $roots
 }
 
-function Get-RelevantLogs([string]$root) {
-  if (!(Test-Path $root)) { return @() }
-  return @(Get-ChildItem $root -Recurse -File -Filter '*.jsonl' | Where-Object {
-    $_.FullName -match '[\\/]chatSessions[\\/]' -or
-    $_.Name -eq 'main.jsonl' -or
-    $_.Name -like 'runSubagent-*'
-  })
+function Get-RelevantLogs([string[]]$roots) {
+  $seen = @{}
+  $files = @()
+  foreach ($root in $roots) {
+    if (!(Test-Path $root)) { continue }
+    foreach ($file in Get-ChildItem $root -Recurse -File -Filter '*.jsonl') {
+      $relevant = $file.FullName -match '[\\/]chatSessions[\\/]' -or
+        $file.Name -eq 'main.jsonl' -or
+        $file.Name -like 'runSubagent-*'
+      if ($relevant -and !$seen.ContainsKey($file.FullName)) {
+        $seen[$file.FullName] = $true
+        $files += $file
+      }
+    }
+  }
+  return $files
 }
 
-function Get-Snapshot([string]$root) {
+function Get-Snapshot([string[]]$roots) {
   $snapshot = @{}
-  foreach ($file in Get-RelevantLogs $root) {
+  foreach ($file in Get-RelevantLogs $roots) {
     $snapshot[$file.FullName] = "$($file.Length):$($file.LastWriteTimeUtc.Ticks)"
   }
   return $snapshot
 }
 
-function Get-ChangedLogs([string]$root, [hashtable]$before) {
-  return @(Get-RelevantLogs $root | Where-Object {
+function Get-ChangedLogs([string[]]$roots, [hashtable]$before) {
+  return @(Get-RelevantLogs $roots | Where-Object {
     !$before.ContainsKey($_.FullName) -or $before[$_.FullName] -ne "$($_.Length):$($_.LastWriteTimeUtc.Ticks)"
   })
 }
 
-function Wait-ForLogs([string]$root, [hashtable]$before, [int]$minimumChildren, [int]$timeoutSeconds = 600) {
+function Wait-ForLogs([string[]]$roots, [hashtable]$before, [int]$minimumChildren, [int]$timeoutSeconds = 600) {
   $deadline = (Get-Date).AddSeconds($timeoutSeconds)
   $lastSignature = ''
   $stableSince = $null
   while ((Get-Date) -lt $deadline) {
-    $changed = Get-ChangedLogs $root $before
+    $changed = Get-ChangedLogs $roots $before
     $children = @($changed | Where-Object { $_.Name -like 'runSubagent-*' })
     $hasParent = @($changed | Where-Object { $_.Name -eq 'main.jsonl' -or $_.FullName -match '[\\/]chatSessions[\\/]' }).Count -gt 0
     $signature = ($changed | Sort-Object FullName | ForEach-Object { "$($_.FullName):$($_.Length):$($_.LastWriteTimeUtc.Ticks)" }) -join '|'
@@ -103,7 +122,7 @@ function Copy-CapturedLogs([object[]]$files, [string]$destination) {
 }
 
 $code = Find-CodeCommand
-$workspaceStorage = Find-WorkspaceStorage
+$copilotRoots = @(Find-CopilotRoots)
 
 & npm.cmd ci
 if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE" }
@@ -120,18 +139,18 @@ Set-Content -Encoding UTF8 (Join-Path $workspace 'single input.txt') @('alpha', 
 Set-Content -Encoding UTF8 (Join-Path $workspace 'child A.txt') @('red', 'green', 'blue')
 Set-Content -Encoding UTF8 (Join-Path $workspace 'child B.txt') @('one two', 'three four', 'five six')
 
-$beforeSingle = Get-Snapshot $workspaceStorage
+$beforeSingle = Get-Snapshot $copilotRoots
 Set-Location $workspace
 & $code chat -m agent -n -a (Join-Path $workspace 'single input.txt') `
   'Read the attached file and report its first and last line. Do not delegate, edit files, or run terminal commands.'
 if ($LASTEXITCODE -ne 0) { throw "VS Code single-agent launch failed with exit code $LASTEXITCODE" }
-$singleLogs = Wait-ForLogs $workspaceStorage $beforeSingle 0
+$singleLogs = Wait-ForLogs $copilotRoots $beforeSingle 0
 
-$beforeMulti = Get-Snapshot $workspaceStorage
+$beforeMulti = Get-Snapshot $copilotRoots
 & $code chat -m agent -n -a (Join-Path $workspace 'child A.txt') -a (Join-Path $workspace 'child B.txt') `
   'Use exactly two subagents in parallel. One must inspect child A.txt and the other child B.txt. The parent must only combine their results. Do not edit files or run terminal commands.'
 if ($LASTEXITCODE -ne 0) { throw "VS Code multi-agent launch failed with exit code $LASTEXITCODE" }
-$multiLogs = Wait-ForLogs $workspaceStorage $beforeMulti 2
+$multiLogs = Wait-ForLogs $copilotRoots $beforeMulti 2
 
 Copy-CapturedLogs (@($singleLogs) + @($multiLogs)) $captured
 Set-Location $repo

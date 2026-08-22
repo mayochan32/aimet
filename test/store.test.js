@@ -77,22 +77,86 @@ test('store deterministically keeps Copilot main span over chat snapshot', () =>
   const chat = sampleMetrics({
     tool: 'copilot', sessionId: 'same-parent',
     logPath: '/x/chatSessions/same-parent.jsonl',
+    project: '/known/workspace',
     lastEventAt: '2026-06-01T00:20:00.000Z',
     tokens: { input: 10, output: 2, cacheRead: null, cacheWrite: null, reasoning: null },
   });
   const main = sampleMetrics({
     tool: 'copilot', sessionId: 'same-parent',
     logPath: '/x/GitHub.copilot-chat/debug-logs/same-parent/main.jsonl',
+    project: 'unknown',
     lastEventAt: '2026-06-01T00:19:00.000Z',
     tokens: { input: 100, output: 20, cacheRead: 50, cacheWrite: null, reasoning: null },
   });
   assert.equal(store.upsert(chat), 'inserted');
   assert.equal(store.upsert(main), 'updated', 'richer main wins even with an earlier final timestamp');
   assert.equal(store.upsert(chat), 'skipped', 'later scan cannot replace main with chat');
-  const row = store.query('SELECT log_path, input_tokens, cache_read_tokens FROM sessions')[0];
+  const row = store.query('SELECT log_path, project, input_tokens, cache_read_tokens FROM sessions')[0];
   assert.match(String(row.log_path), /debug-logs/);
+  assert.equal(row.project, '/known/workspace', 'richer metrics preserve known chat project');
   assert.equal(row.input_tokens, 100);
   assert.equal(row.cache_read_tokens, 50);
+  store.close();
+});
+
+test('lower-ranked Copilot chat snapshot enriches an existing main project only', () => {
+  const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-')), 'm.db');
+  const store = new Store(db);
+  const main = sampleMetrics({
+    tool: 'copilot', sessionId: 'reverse-parent',
+    logPath: '/x/GitHub.copilot-chat/debug-logs/reverse-parent/main.jsonl',
+    project: 'unknown',
+    lastEventAt: '2026-06-01T00:19:00.000Z',
+    tokens: { input: 100, output: 20, cacheRead: 50, cacheWrite: null, reasoning: null },
+  });
+  const chat = sampleMetrics({
+    tool: 'copilot', sessionId: 'reverse-parent',
+    logPath: '/x/chatSessions/reverse-parent.jsonl',
+    project: '/known/reverse-workspace',
+    lastEventAt: '2026-06-01T00:20:00.000Z',
+    tokens: { input: 10, output: 2, cacheRead: null, cacheWrite: null, reasoning: null },
+  });
+
+  assert.equal(store.upsert(main), 'inserted');
+  assert.equal(store.upsert(chat), 'updated', 'chat contributes only missing project metadata');
+  const row = store.query(
+    'SELECT log_path, project, input_tokens, cache_read_tokens FROM sessions'
+  )[0];
+  assert.match(String(row.log_path), /debug-logs/);
+  assert.equal(row.project, '/known/reverse-workspace');
+  assert.equal(row.input_tokens, 100, 'main metrics are retained');
+  assert.equal(row.cache_read_tokens, 50);
+  assert.equal(store.upsert(chat), 'skipped', 'project enrichment remains idempotent');
+  store.close();
+});
+
+test('Copilot children inherit a known parent project in either scan order', () => {
+  const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-')), 'm.db');
+  const store = new Store(db);
+  const parent = sampleMetrics({
+    tool: 'copilot', sessionId: 'project-parent', project: '/workspace/project',
+    logPath: '/x/GitHub.copilot-chat/debug-logs/project-parent/main.jsonl',
+  });
+  const earlyChild = sampleMetrics({
+    tool: 'copilot', sessionId: 'early-child', parentSessionId: 'project-parent',
+    project: 'unknown', logPath: '/x/GitHub.copilot-chat/debug-logs/project-parent/runSubagent-early.jsonl',
+  });
+  const lateChild = sampleMetrics({
+    tool: 'copilot', sessionId: 'late-child', parentSessionId: 'project-parent',
+    project: 'unknown', logPath: '/x/GitHub.copilot-chat/debug-logs/project-parent/runSubagent-late.jsonl',
+  });
+
+  store.upsert(earlyChild);
+  store.upsert(parent);
+  store.upsert(lateChild);
+  const rows = store.query(
+    `SELECT session_id, project FROM sessions
+     WHERE parent_session_id = 'project-parent' ORDER BY session_id`
+  );
+  assert.deepEqual(rows.map((row) => ({ ...row })), [
+    { session_id: 'early-child', project: '/workspace/project' },
+    { session_id: 'late-child', project: '/workspace/project' },
+  ]);
   store.close();
 });
 

@@ -1,6 +1,7 @@
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import type { Parser, SessionMetrics, TokenUsage } from '../types.js';
 import { costUsd } from '../pricing.js';
 import { jsonlRecords } from './util.js';
@@ -98,30 +99,175 @@ export async function reduceSession(path: string): Promise<Record<string, unknow
 const iso = (ms: unknown): string =>
   typeof ms === 'number' && ms > 0 ? new Date(ms).toISOString() : '';
 
+type SessionProjectCache = {
+  signature: string;
+  projects: Map<string, string>;
+};
+
+const sessionProjectCaches = new Map<string, SessionProjectCache>();
+const workspaceProjectCaches = new Map<string, string[]>();
+
+function fileSignature(path: string): string {
+  try {
+    const stat = statSync(path);
+    return `${stat.size}:${stat.mtimeMs}`;
+  } catch {
+    return '-';
+  }
+}
+
 /**
- * Workspace folder from workspace.json (best effort). Walks up from the log
- * file because the depth differs: chatSessions/*.jsonl sits 2 levels below
- * the <hash> dir, debug-logs/<uuid>/*.jsonl sits 4 levels below.
+ * Current Copilot builds keep a read-only session index next to debug-logs.
+ * Query only sessions(id, cwd); turns and other conversation content are not
+ * needed for project attribution. Include the WAL in the cache signature so a
+ * long-running collector notices newly persisted session metadata.
  */
-export function projectOf(logPath: string): string {
-  let dir = dirname(logPath);
-  for (let i = 0; i < 5; i++) {
-    const ws = join(dir, 'workspace.json');
-    if (existsSync(ws)) {
-      try {
-        const folder = (JSON.parse(readFileSync(ws, 'utf8')) as { folder?: string }).folder;
-        if (folder) {
-          if (folder.startsWith('file://')) {
-            const decoded = fileURLToPath(folder);
-            return decoded.replace(/^\/([A-Za-z]:[\\/])/, '$1');
-          }
-          return decodeURIComponent(folder);
+function sessionStoreProject(dbPath: string, sessionId: string): string {
+  if (!sessionId || !existsSync(dbPath)) return 'unknown';
+  const signature = `${fileSignature(dbPath)}:${fileSignature(`${dbPath}-wal`)}`;
+  let cached = sessionProjectCaches.get(dbPath);
+  if (!cached || cached.signature !== signature) {
+    const projects = new Map<string, string>();
+    let db: DatabaseSync | undefined;
+    try {
+      db = new DatabaseSync(dbPath, { readOnly: true });
+      const rows = db.prepare(
+        `SELECT id, cwd FROM sessions
+         WHERE cwd IS NOT NULL AND TRIM(cwd) <> ''`
+      ).all() as { id: string; cwd: string }[];
+      for (const row of rows) {
+        if (typeof row.id === 'string' && typeof row.cwd === 'string' && row.cwd.trim()) {
+          projects.set(row.id, row.cwd.trim());
         }
-      } catch {
-        /* fall through */
       }
+    } catch {
+      // Older builds may not have this database/schema, or VS Code may be in
+      // the middle of replacing it. Project attribution remains best effort.
+    } finally {
+      db?.close();
+    }
+    cached = { signature, projects };
+    sessionProjectCaches.set(dbPath, cached);
+  }
+  return cached.projects.get(sessionId) ?? 'unknown';
+}
+
+function workspaceProjectFile(path: string): string {
+  try {
+    const data = JSON.parse(readFileSync(path, 'utf8')) as { folder?: string; workspace?: string };
+    const value = data.folder ?? data.workspace;
+    if (!value) return 'unknown';
+    if (value.startsWith('file://')) {
+      const decoded = fileURLToPath(value);
+      return decoded.replace(/^\/([A-Za-z]:[\\/])/, '$1');
+    }
+    return decodeURIComponent(value);
+  } catch {
+    return 'unknown';
+  }
+}
+
+/** Workspace folders registered for the same VS Code User data directory. */
+export function knownWorkspaceProjects(logPath: string): string[] {
+  let dir = dirname(logPath);
+  let workspaceStorage = '';
+  for (let i = 0; i < 7; i++) {
+    if (basename(dir).toLowerCase() === 'globalstorage') {
+      workspaceStorage = join(dirname(dir), 'workspaceStorage');
       break;
     }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  if (!workspaceStorage || !existsSync(workspaceStorage)) return [];
+  const cached = workspaceProjectCaches.get(workspaceStorage);
+  if (cached) return cached;
+
+  const projects: string[] = [];
+  try {
+    for (const entry of readdirSync(workspaceStorage, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const project = workspaceProjectFile(join(workspaceStorage, entry.name, 'workspace.json'));
+      if (project !== 'unknown') projects.push(project);
+    }
+  } catch {
+    /* best effort */
+  }
+  const unique = [...new Set(projects)];
+  workspaceProjectCaches.set(workspaceStorage, unique);
+  return unique;
+}
+
+function comparablePath(value: string): string {
+  // Nested JSON strings may contain doubled backslashes. Collapse them before
+  // comparing. Windows case folding is applied from the candidate workspace.
+  let normalized = value;
+  while (normalized.includes('\\\\')) normalized = normalized.replace(/\\\\/g, '\\');
+  return normalized.replace(/\\/g, '/');
+}
+
+/**
+ * Add only registered VS Code workspaces referenced by structured log data.
+ * This never invents a project from the common parent of arbitrary attachments.
+ */
+export function collectKnownWorkspaceReferences(
+  value: unknown,
+  projects: string[],
+  matches: Set<string>,
+  depth = 0
+): void {
+  if (depth > 12 || value === null || value === undefined) return;
+  if (typeof value === 'string') {
+    const normalized = comparablePath(value);
+    for (const project of projects) {
+      const candidate = comparablePath(project).replace(/\/$/, '');
+      const windowsPath = /^[A-Za-z]:\//.test(candidate);
+      const haystack = windowsPath ? normalized.toLowerCase() : normalized;
+      const needle = windowsPath ? candidate.toLowerCase() : candidate;
+      if (haystack.includes(`${needle}/`) || haystack === needle) matches.add(project);
+    }
+    if (value.startsWith('{') || value.startsWith('[')) {
+      try {
+        collectKnownWorkspaceReferences(JSON.parse(value), projects, matches, depth + 1);
+      } catch {
+        /* ordinary text, not nested JSON */
+      }
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectKnownWorkspaceReferences(item, projects, matches, depth + 1);
+    return;
+  }
+  if (typeof value === 'object') {
+    for (const item of Object.values(value as Record<string, unknown>)) {
+      collectKnownWorkspaceReferences(item, projects, matches, depth + 1);
+    }
+  }
+}
+
+/**
+ * Resolve a Copilot session's project without guessing from the collector's
+ * current working directory.
+ *
+ * 1. Legacy workspaceStorage logs use the nearest workspace.json.
+ * 2. Current globalStorage logs use the exact session id in session-store.db.
+ *
+ * Walk upward because chatSessions and debug-logs have different depths.
+ */
+export function projectOf(logPath: string, sessionId = ''): string {
+  let dir = dirname(logPath);
+  for (let i = 0; i < 6; i++) {
+    const ws = join(dir, 'workspace.json');
+    if (existsSync(ws)) {
+      const workspace = workspaceProjectFile(ws);
+      if (workspace !== 'unknown') return workspace;
+      break;
+    }
+    const sessionDb = join(dir, 'session-store.db');
+    const indexed = sessionStoreProject(sessionDb, sessionId);
+    if (indexed !== 'unknown') return indexed;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
@@ -226,7 +372,7 @@ export const copilotParser: Parser = {
       tool: 'copilot',
       sessionId: (s.sessionId as string) || basename(path, '.jsonl'),
       logPath: path,
-      project: projectOf(path),
+      project: projectOf(path, (s.sessionId as string) || basename(path, '.jsonl')),
       model: model || 'unknown',
       startedAt: iso(first),
       endedAt: iso(last),
