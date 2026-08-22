@@ -269,17 +269,23 @@ VS CodeとCopilot拡張は自動更新されるため、将来の再検証では
 **`test/paths.test.js` — macOS / Windows互換性**
 
 - `VSCODE_PORTABLE` / `VSCODE_APPDATA` / `%APPDATA%` / `XDG_CONFIG_HOME`の優先順位、Windowsのフォールバック、Stable / Insiders / VSCodium、新旧の `workspaceStorage` / `globalStorage`、`AIMET_COPILOT_DIR`の `;` 区切り、Windows `file://` URIを検証します。
-- Portable Modeの変更先に置いたCopilot JSONLを`--dir`なしで収集し、DBへ取り込めることと、`aimet init copilot`が同じUserディレクトリへプロンプトを配置することを検証します。
-- `CLAUDE_CONFIG_DIR` / `CODEX_HOME`の既定値と上書きをmacOS / Linux / Windows形式で検証し、変更先の実JSONLを`--dir`なしで収集できること、`aimet init`が同じルートを使うことを確認します。
+- Portable Modeの変更先に置いたCopilot JSONLと、`CLAUDE_CONFIG_DIR` / `CODEX_HOME`の変更先に置いた実JSONLを`--dir`なしで収集し、DBへ取り込めることを検証します。
+- `CLAUDE_CONFIG_DIR` / `CODEX_HOME`の既定値と上書きをmacOS / Linux / Windows形式で検証します。
 - `session-store.db`のセッションID完全一致、構造化されたログ中のパスだけを使う安全な補完、自由記述の除外、より高信頼なプロジェクト根拠へのメタデータ限定更新を検証します。
 - CIのWindowsジョブでは、`--dir` なしの自動探索から取り込みまで実行します。
+
+**`test/init.test.js` — フックとプロンプトの安全な初期化**
+
+- Claude / Codex / Copilotそれぞれで、未作成の明示ルートをdry-runに表示しつつ、ファイルやディレクトリを作成しないことを検証します。
+- 通常実行で既存設定を保持し、`.bak`を作り、必要なフックとプロンプトを配置し、再実行してもフックが重複しないことを検証します。
+- 別コマンドの部分文字列や間違ったフック構造を「登録済み」と誤判定せず、`type: command`とコマンドの完全一致で判定することを検証します。
+- 3ツールとも既存設定が不正なJSONなら上書きせず停止することを検証します。
 
 **`test/security.test.js` — レビュー指摘の再発防止**
 
 - **プロトタイプ汚染**: `__proto__` / `constructor` を含む細工Copilotログを読んでも `Object.prototype` が汚染されないこと。正当なデータは正しく復元されること。
 - **SQLホワイトリスト**: `report` の `--by` / `--period` に想定外の値（例: `tool; DROP TABLE ...`）を渡すと、SQLを組み立てる前に例外で弾くこと。
 - **pricing.json検証**: ユーザー単価表の不正エントリ（型不正・危険キー）は読み飛ばし、正当な上書きだけ採用すること。
-- **設定ファイル保護**: 既存設定が不正なJSONのとき、`init` が**上書きせず例外で停止**し、元ファイルを変更しないこと。
 
 ## 機能と使い方
 

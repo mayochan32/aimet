@@ -1,9 +1,28 @@
 import { readFileSync, writeFileSync, copyFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, platform } from 'node:os';
 import { claudeConfigDir, codexHome, vscodeUserDirs } from './paths.js';
 
 const HOOK_CMD = (tool: string) => `aimet hook ${tool}`;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Match a hook by its command field and expected schema, never by JSON text. */
+function hasDirectHookCommand(list: unknown[], command: string): boolean {
+  return list.some(
+    (entry) => isRecord(entry) && entry.type === 'command' && entry.command === command
+  );
+}
+
+function hasNestedHookCommand(list: unknown[], command: string): boolean {
+  return list.some(
+    (entry) => isRecord(entry) && Array.isArray(entry.hooks) && entry.hooks.some(
+      (hook) => isRecord(hook) && hook.type === 'command' && hook.command === command
+    )
+  );
+}
 
 /**
  * Parse an existing config file. Throws (rather than returning {}) when the
@@ -42,15 +61,14 @@ function writeFile(path: string, content: string, dryRun: boolean, log: string[]
 }
 
 /** Register the SessionEnd hook + /metrics command for Claude Code. */
-export function initClaude(dryRun: boolean): string {
+export function initClaude(dryRun: boolean, configDir: string = claudeConfigDir()): string {
   const log: string[] = [];
-  const configDir = claudeConfigDir();
   const settingsPath = join(configDir, 'settings.json');
   const settings = existsSync(settingsPath) ? readJson(settingsPath) : {};
   const hooks = (settings.hooks ??= {}) as Record<string, unknown[]>;
   const entry = { hooks: [{ type: 'command', command: HOOK_CMD('claude') }] };
   const list = (hooks.SessionEnd ??= []) as unknown[];
-  if (!JSON.stringify(list).includes(HOOK_CMD('claude'))) {
+  if (!hasNestedHookCommand(list, HOOK_CMD('claude'))) {
     list.push(entry);
     writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', dryRun, log);
   } else {
@@ -77,14 +95,13 @@ export function initClaude(dryRun: boolean): string {
 }
 
 /** Register hooks.json + /metrics custom prompt for Codex CLI. */
-export function initCodex(dryRun: boolean): string {
+export function initCodex(dryRun: boolean, configDir: string = codexHome()): string {
   const log: string[] = [];
-  const configDir = codexHome();
   const hooksPath = join(configDir, 'hooks.json');
   const cfg = existsSync(hooksPath) ? readJson(hooksPath) : {};
   const hooks = (cfg.hooks ??= {}) as Record<string, unknown[]>;
   const list = (hooks.SessionEnd ??= []) as unknown[];
-  if (!JSON.stringify(list).includes('aimet hook codex')) {
+  if (!hasDirectHookCommand(list, HOOK_CMD('codex'))) {
     list.push({ type: 'command', command: HOOK_CMD('codex') });
     writeFile(hooksPath, JSON.stringify(cfg, null, 2) + '\n', dryRun, log);
     log.push('note: verify the hook fires with `codex` -> /hooks (schema may vary by version)');
@@ -113,13 +130,25 @@ export function initCodex(dryRun: boolean): string {
  * GitHub Copilot Chat. Hook location: ~/.copilot/hooks/*.json (user level),
  * same event schema as Claude Code. Fires on Stop (session ends).
  */
-export function initCopilot(dryRun: boolean): string {
+export function initCopilot(
+  dryRun: boolean,
+  options: {
+    home?: string;
+    env?: NodeJS.ProcessEnv;
+    os?: NodeJS.Platform;
+    cwd?: string;
+  } = {}
+): string {
   const log: string[] = [];
-  const hooksPath = join(homedir(), '.copilot', 'hooks', 'aimet.json');
+  const home = options.home ?? homedir();
+  const env = options.env ?? process.env;
+  const os = options.os ?? platform();
+  const cwd = options.cwd ?? env.VSCODE_CWD ?? process.cwd();
+  const hooksPath = join(home, '.copilot', 'hooks', 'aimet.json');
   const cfg = existsSync(hooksPath) ? readJson(hooksPath) : {};
   const hooks = (cfg.hooks ??= {}) as Record<string, unknown[]>;
   const list = (hooks.Stop ??= []) as unknown[];
-  if (!JSON.stringify(list).includes(HOOK_CMD('copilot'))) {
+  if (!hasDirectHookCommand(list, HOOK_CMD('copilot'))) {
     list.push({ type: 'command', command: HOOK_CMD('copilot') });
     writeFile(hooksPath, JSON.stringify(cfg, null, 2) + '\n', dryRun, log);
     log.push('note: VS Code agent hooks are in Preview. Verify with /hooks in Copilot Chat');
@@ -131,9 +160,9 @@ export function initCopilot(dryRun: boolean): string {
   // dry run, retain explicitly configured roots even before they are created
   // so the caller can verify the resolved destination without changing disk.
   const hasConfiguredUserDataRoot = Boolean(
-    process.env.VSCODE_PORTABLE?.trim() || process.env.VSCODE_APPDATA?.trim()
+    env.VSCODE_PORTABLE?.trim() || env.VSCODE_APPDATA?.trim()
   );
-  const userDirs = vscodeUserDirs().filter(
+  const userDirs = vscodeUserDirs(env, os, home, cwd).filter(
     (d) => existsSync(d) || (dryRun && hasConfiguredUserDataRoot)
   );
   const prompt = [

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 const fx = (name) => join(import.meta.dirname, 'fixtures', name);
@@ -47,25 +47,21 @@ test('pricing: invalid user entries are ignored, defaults preserved', async () =
       __proto__: [9, 9, 9, 9], // unsafe key -> skipped
     })
   );
-  process.env.HOME = home;
-  process.env.USERPROFILE = home; // homedir() uses USERPROFILE on Windows
-  const { pricingTable, costUsd } = await import('../dist/pricing.js');
-  const t = pricingTable();
-  assert.deepEqual(t['my-model'], [1, 2, 0.1, 0], 'valid override accepted');
-  assert.deepEqual(t['gpt-5'], [9, 8, 7, 0], 'built-in entry overridden');
-  assert.equal('bad-shape' in t, false, 'invalid entry skipped');
-  assert.equal(costUsd('nonexistent-model', { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0 }), null);
-});
-
-test('init: refuses to overwrite an invalid config file', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'aimet-init-'));
-  mkdirSync(join(home, '.claude'), { recursive: true });
-  const settings = join(home, '.claude', 'settings.json');
-  const broken = '{ not valid json, // comment\n';
-  writeFileSync(settings, broken);
-  process.env.HOME = home;
-  process.env.USERPROFILE = home; // homedir() uses USERPROFILE on Windows
-  const { initTool } = await import('../dist/init.js');
-  assert.throws(() => initTool('claude', false), /not valid JSON/);
-  assert.equal(readFileSync(settings, 'utf8'), broken, 'file must be left untouched');
+  const oldHome = process.env.HOME;
+  const oldUserProfile = process.env.USERPROFILE;
+  try {
+    process.env.HOME = home;
+    process.env.USERPROFILE = home; // homedir() uses USERPROFILE on Windows
+    const { pricingTable, costUsd } = await import('../dist/pricing.js');
+    const t = pricingTable();
+    assert.deepEqual(t['my-model'], [1, 2, 0.1, 0], 'valid override accepted');
+    assert.deepEqual(t['gpt-5'], [9, 8, 7, 0], 'built-in entry overridden');
+    assert.equal('bad-shape' in t, false, 'invalid entry skipped');
+    assert.equal(costUsd('nonexistent-model', { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0 }), null);
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+    if (oldUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = oldUserProfile;
+  }
 });
