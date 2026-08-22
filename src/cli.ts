@@ -1,13 +1,6 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { Store } from './store.js';
-import { collect, ingestFile } from './collect.js';
-import { report, reportRows, sessionSummary, sessionRow, childrenRows, parseTimeArg } from './report.js';
-import { reportMd, sessionMd, detailMd } from './markdown.js';
-import { parserFor } from './parsers/index.js';
-import { initTool } from './init.js';
-import { detail } from './detail.js';
 
 const USAGE = `aimet - AI Metrics for Claude Code / Codex / GitHub Copilot
 
@@ -59,6 +52,29 @@ async function main(): Promise<void> {
     console.log(USAGE);
     return;
   }
+
+  // Keep metadata-only commands independent from node:sqlite. Node 22 marks
+  // the built-in SQLite module experimental and prints a warning as soon as
+  // it is imported; --version and --help should remain clean on every
+  // supported Node version because neither command opens the metrics DB.
+  const [
+    { Store },
+    { collect, ingestFile },
+    { report, reportRows, sessionSummary, sessionRow, childrenRows, parseTimeArg },
+    { reportMd, sessionMd, detailMd },
+    { parserFor },
+    { initTool },
+    { detail },
+  ] = await Promise.all([
+    import('./store.js'),
+    import('./collect.js'),
+    import('./report.js'),
+    import('./markdown.js'),
+    import('./parsers/index.js'),
+    import('./init.js'),
+    import('./detail.js'),
+  ]);
+
   const { values } = parseArgs({
     args: rest,
     options: {
