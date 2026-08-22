@@ -14,7 +14,7 @@
 |---|---|---|---|
 | Claude Code | `<Claude保存ルート>/projects/**/*.jsonl`（既定: `~/.claude`） | 実測（in / out / cacheR / cacheW、1h/5mキャッシュ内訳） | ✅ |
 | Claude Code サブエージェント | `<Claude保存ルート>/projects/<project>/<session-id>/subagents/agent-<agent-id>.jsonl` | 親と独立した実測（in / out / cacheR / cacheW） | ✅ |
-| Codex CLI | `<Codex保存ルート>/sessions/**/rollout-*.jsonl`（既定: `~/.codex`） | 実測（in / cached / out / reasoning）＋レート制限時系列 | ✅ |
+| Codex（CLI / IDE拡張 / ChatGPTデスクトップアプリのローカルCodex） | `<Codex保存ルート>/sessions/**/rollout-*.jsonl`（既定: `~/.codex`） | 実測（in / cached / out / reasoning）＋レート制限時系列 | ✅ |
 | GitHub Copilot (VS Code Chat) | `workspaceStorage/<hash>/chatSessions/*.jsonl` + `workspaceStorage`（旧）または `globalStorage`（現行）の `debug-logs/<uuid>/main.jsonl` | 実測（in / cached / out）＋消費AI Credits | ✅ |
 | GitHub Copilot サブエージェント | `workspaceStorage/<hash>/GitHub.copilot-chat`（旧）または `globalStorage/github.copilot-chat`（現行）の `debug-logs/<親uuid>/*Subagent-*.jsonl` | 実測（in / cached / out / AI Credits、リクエスト単位） | ✅ |
 | GitHub Copilot CLI | `~/.copilot/session-state/<uuid>/events.jsonl` | 実測（**出力トークンのみ**） | ✅ |
@@ -33,6 +33,41 @@ aimetがトークン集計に使うのは、デバッグ用のテキストログ
 - Claude Codeの公式仕様は、トランスクリプトのJSONL内部形式がバージョン間で変更され得ることも明記しています。aimetは既知形式をfixtureで固定テストしますが、Claude Code更新後は実ログでの再検証が必要です。
 - Claude Codeで`CLAUDE_CODE_SKIP_PROMPT_HISTORY`または`--no-session-persistence`、Codexで`--ephemeral`を使ったセッションはローカルJSONLを保存しないため、aimetでは取得できません。
 - Claude Codeの現行デバッグログは`<Claude保存ルート>/debug/`、Codexの運用ログは`<Codex保存ルート>/log/`です。これらはセッション別トークンの集計元ではありません。Claude Codeの旧`logs/`ディレクトリは現行版では書き込まれません。
+
+#### Codexの対応クライアントと取得範囲
+
+aimetのCodex対応はCLIのプロセスだけを識別しているのではなく、ローカルに保存された`rollout-*.jsonl`を収集する仕組みです。そのため、同じCodexのローカル実行基盤がセッショントランスクリプトを保存する次のクライアントを対象にできます。
+
+- **Codex CLI**の通常セッション
+- **Codex IDE拡張**のローカルセッション
+- **ChatGPTデスクトップアプリの「Codex」**でフォルダを開いて実行したローカルタスク
+- 上記から起動されたサブエージェント。親とは別のrolloutを読み、ログ内の親IDでグループ化します
+
+ChatGPTデスクトップアプリには「ChatGPT」と「Codex」という異なる実行先があります。aimetが対象にするのは、`<Codex保存ルート>/sessions/`にrolloutが作られる**Codexのローカルタスクだけ**です。通常のChatGPTチャットやWorkの会話履歴を、ChatGPTアカウントやクラウドの履歴APIから取得する機能ではありません。`state_*.sqlite`などのアプリ内部の索引・状態DBも、トークン集計元には使用しません。
+
+次のケースは取得できません。
+
+- ChatGPTデスクトップアプリの通常の**ChatGPTチャット／Work**で、Codex rolloutが作られない会話
+- ChatGPTのWeb版・モバイル版だけで行った会話
+- **Codex cloud／remoteだけ**で完結し、ローカルへ同期・再開されずrolloutが存在しないタスク
+- Codex CLIの`--ephemeral`など、セッション永続化を無効にした実行
+- 収集前に削除・移動され、探索先に存在しなくなったrollout
+
+クラウドタスクをローカルへ同期・再開した場合も、aimetが取得できるのはローカルのrolloutに実際に記録された範囲です。なお、rolloutのディレクトリ階層は**セッションを最初に作成した日付**です。後日デスクトップアプリで再開すると元の日付ディレクトリのファイルへ追記されるため、更新日のディレクトリだけを手作業で確認すると見落とします。aimetは`sessions/`以下を再帰探索するため、この再開ケースも収集できます。
+
+##### `CODEX_HOME`を変更するときの注意
+
+OpenAIの公式仕様では、`CODEX_HOME`はCLI・IDE拡張・app-serverが使うCodex状態ルートで、未設定時は`~/.codex`です。aimetも**aimetプロセスから見える`CODEX_HOME`**を読み、`<CODEX_HOME>/sessions`を自動探索します。既定値を使う場合は通常、各クライアントとaimetが同じ場所を参照します。
+
+カスタム値を使う場合は、Codexクライアントとaimetの双方から同じ`CODEX_HOME`が見えている必要があります。環境変数は設定ファイルに書いただけでは、すでに起動しているGUIアプリへ遡って反映されません。またmacOSでFinderから起動したアプリはシェルの`.zshrc`、Linuxのデスクトップランチャーは対話シェルの初期化ファイルを必ずしも読みません。Windowsでもユーザー／システム環境変数を変更した後は、起動済みのChatGPT・VS Code・ターミナルをいったん終了して起動し直してください。片方だけにカスタム値が設定されると、Codexは変更先へ保存する一方、aimetは既定の`~/.codex`を探索する（またはその逆）ため、ログが0件に見えます。
+
+カスタム保存先を使う場合は、次のいずれかで探索先を一致させてください。
+
+1. OSまたは各アプリの起動環境で同じ`CODEX_HOME`を設定し、Codexクライアントとaimetを再起動する。
+2. 一時的な確認では`aimet collect --tool codex --dir <実際のCODEX_HOME>/sessions`と明示する。
+3. `aimet init codex`を使う場合も、実行時の`CODEX_HOME`をCodexクライアントと一致させる。`init`と`collect`は同じ解決規則を使います。
+
+`config.toml`の`log_dir`は運用・診断ログの保存先であり、セッショントランスクリプトの`sessions/`を移す設定ではありません。`log_dir`を変えても、aimetのrollout探索先は変わりません。
 
 #### Claude Codeの親・サブエージェント識別と集計
 
@@ -74,6 +109,9 @@ aimetは以下の規則で取り込みます。
 - [Claude Code: Application dataとWindowsの保存ルート](https://code.claude.com/docs/en/claude-directory#application-data)
 - [Claude Code: サブエージェントのトランスクリプト](https://code.claude.com/docs/en/sub-agents)
 - [OpenAI: Codexの`CODEX_HOME`仕様](https://developers.openai.com/codex/environment-variables)
+- [OpenAI: ChatGPTデスクトップアプリ（ChatGPTとCodexの選択）](https://learn.chatgpt.com/docs/app)
+- [OpenAI: Codex App Server（リッチクライアントの共通基盤）](https://learn.chatgpt.com/docs/app-server)
+- [OpenAI: Codex設定リファレンス（`log_dir`）](https://learn.chatgpt.com/docs/config-file/config-reference)
 - [OpenAI公式ソース: rolloutの保存先とファイル名](https://github.com/openai/codex/blob/main/codex-rs/rollout/src/recorder.rs)
 - [OpenAI: Codex CLIの`--ephemeral`](https://developers.openai.com/codex/cli/reference)
 
@@ -523,7 +561,7 @@ aimet init <claude|codex|copilot> [--dry-run]
 |---|---|
 | `AIMET_DB` | データベースファイルのパス（デフォルト: `~/.aimet/metrics.db`） |
 | `CLAUDE_CONFIG_DIR` | Claude Codeの設定・セッション保存ルート。aimetの収集と`init claude`も尊重（未設定時: `~/.claude`） |
-| `CODEX_HOME` | Codexの設定・セッション保存ルート。aimetの収集と`init codex`も尊重（未設定時: `~/.codex`） |
+| `CODEX_HOME` | Codexの設定・セッション保存ルート。CLI・IDE拡張・app-serverと、aimetの収集・`init codex`が参照（未設定時: `~/.codex`）。GUIアプリとaimetで見える値が異なると収集できないため、変更時は「Codexの対応クライアントと取得範囲」を参照 |
 | `VSCODE_PORTABLE` | VS Code Portable Modeのルート。Copilotの`<value>/user-data/User`を自動探索 |
 | `VSCODE_APPDATA` | VS Code全体のユーザーデータ基点。`VSCODE_PORTABLE`未設定時にCopilot探索へ反映 |
 | `APPDATA` / `XDG_CONFIG_HOME` | Windows / LinuxのVS Code標準ユーザーデータ基点。上記2変数の未設定時に使用 |
