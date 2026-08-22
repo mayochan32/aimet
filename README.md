@@ -58,6 +58,8 @@ npm test
 npm run test:e2e:copilot-windows
 ```
 
+詳細な準備、成功判定、失敗時の確認方法は [Windows実機Copilot E2E手順](docs/windows-copilot-e2e.md) を参照してください。
+
 **`test/parsers.test.js` — 各ツールパーサの正しさ**
 
 - **Claude**: assistantレコードの `usage` を合計し、`in` / `out` / `cacheR` / `cacheW` が期待値になること。リトライ/ストリーミングで**同じmessage IDが重複しても二重計上せず**、ターン数も過大計上しないこと。途中に壊れたJSONL行があっても無視して処理を続けること。

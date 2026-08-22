@@ -9,18 +9,22 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 Set-Location $repo
 
 function Find-CodeCommand {
-  foreach ($name in @('code.cmd', 'code')) {
+  foreach ($name in @('code.cmd', 'code', 'code-insiders.cmd', 'code-insiders', 'codium.cmd', 'codium')) {
     $cmd = Get-Command $name -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
   }
   $candidates = @(
     (Join-Path $env:LOCALAPPDATA 'Programs\Microsoft VS Code\bin\code.cmd'),
-    (Join-Path $env:ProgramFiles 'Microsoft VS Code\bin\code.cmd')
+    (Join-Path $env:ProgramFiles 'Microsoft VS Code\bin\code.cmd'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\Microsoft VS Code Insiders\bin\code-insiders.cmd'),
+    (Join-Path $env:ProgramFiles 'Microsoft VS Code Insiders\bin\code-insiders.cmd'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\VSCodium\bin\codium.cmd'),
+    (Join-Path $env:ProgramFiles 'VSCodium\bin\codium.cmd')
   )
   foreach ($candidate in $candidates) {
     if (Test-Path $candidate) { return $candidate }
   }
-  throw 'VS Code code.cmd was not found.'
+  throw 'VS Code CLI (code/code-insiders/codium) was not found.'
 }
 
 function Find-WorkspaceStorage {
