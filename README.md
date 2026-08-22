@@ -172,7 +172,7 @@ npm test
 npm run test:e2e:copilot-windows
 ```
 
-詳細な準備、成功判定、失敗時の確認方法は [Windows実機Copilot E2E手順](docs/windows-copilot-e2e.md) を参照してください。
+詳細な準備、成功判定、失敗時の確認方法は [Windows実機Copilot E2E手順](docs/windows-copilot-e2e.md) を参照してください。今回の実測値、判明した問題、修正内容、二重計上の検証結果は [Windows Copilot E2E検証・修正レポート](docs/windows-copilot-validation-report.md) にまとめています。
 
 #### 今回のWindows実機検証環境
 
