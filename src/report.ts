@@ -186,9 +186,14 @@ export function sessionRow(
   const params: unknown[] = [];
   if (opts.tool) { where.push('tool = ?'); params.push(opts.tool); }
   if (opts.id) { where.push('session_id LIKE ?'); params.push(opts.id + '%'); }
+  // A Claude child id starts with its parent id
+  // (<parent>/agent-<id>). Preserve abbreviated-id lookup, but when the user
+  // supplies a complete parent id, select that exact row before newer children.
+  const exactOrder = opts.id ? 'CASE WHEN session_id = ? THEN 0 ELSE 1 END,' : '';
+  if (opts.id) params.push(opts.id);
   const rows = store.query(
     `SELECT * FROM sessions ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-     ORDER BY ended_at DESC LIMIT 1`,
+     ORDER BY ${exactOrder} ended_at DESC LIMIT 1`,
     ...params
   );
   return rows[0] ?? null;
@@ -215,6 +220,14 @@ export function childrenRows(store: Store, sessionId: unknown): Record<string, u
     `SELECT * FROM sessions WHERE parent_session_id = ? ORDER BY started_at`,
     sessionId
   );
+}
+
+function childSessionLabel(childId: unknown, parentId: unknown): string {
+  const child = String(childId);
+  const prefix = `${String(parentId)}/`;
+  // Claude's collision-free DB key embeds the parent id. Show the meaningful
+  // agent portion instead of truncating every child to the same parent prefix.
+  return child.startsWith(prefix) ? child.slice(prefix.length) : child.slice(0, 24);
 }
 
 type RollupField = 'turns' | 'active_sec' | 'duration_sec' | 'input_tokens' |
@@ -268,7 +281,7 @@ export function sessionSummary(store: Store, opts: { tool?: string; id?: string 
         `subagents (${kids.n}):`,
         ...kidRows.map(
           (k) =>
-            `  - ${String(k.session_id).slice(0, 24)}  ${String(k.model)}  ` +
+            `  - ${childSessionLabel(k.session_id, r.session_id)}  ${String(k.model)}  ` +
             `turns ${k.turns} / in ${tok(k.input_tokens)} / out ${tok(k.output_tokens)} / ` +
             `cacheR ${tok(k.cache_read_tokens)} / ` +
             `${k.cost_usd == null ? 'cost n/a' : '$' + num(k.cost_usd).toFixed(4) + costLabel(k)}`

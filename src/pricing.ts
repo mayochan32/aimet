@@ -66,8 +66,16 @@ export function pricingTable(): Record<string, [number, number, number, number]>
   return cached;
 }
 
-/** API-equivalent cost in USD, or null when the model is unknown. */
+/** API-equivalent cost in USD, or null when a non-zero usage model is unknown. */
 export function costUsd(model: string, t: TokenUsage): number | null {
+  // A request that failed before billing can retain a routing id such as
+  // "copilot/auto", which intentionally has no price-table entry. When every
+  // priced field is explicitly measured as zero, the cost is exactly $0 for
+  // every possible unit price. Keep this strict: null means "not recorded"
+  // and must not be converted into measured zero by this shortcut.
+  if (t.input === 0 && t.output === 0 && t.cacheRead === 0 && t.cacheWrite === 0) {
+    return 0;
+  }
   const table = pricingTable();
   const key = Object.keys(table)
     .filter((k) => model.startsWith(k))

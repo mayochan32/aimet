@@ -13,6 +13,7 @@
 | ツール | ログの場所 | 取得できるトークン | 状態 |
 |---|---|---|---|
 | Claude Code | `<Claude保存ルート>/projects/**/*.jsonl`（既定: `~/.claude`） | 実測（in / out / cacheR / cacheW、1h/5mキャッシュ内訳） | ✅ |
+| Claude Code サブエージェント | `<Claude保存ルート>/projects/<project>/<session-id>/subagents/agent-<agent-id>.jsonl` | 親と独立した実測（in / out / cacheR / cacheW） | ✅ |
 | Codex CLI | `<Codex保存ルート>/sessions/**/rollout-*.jsonl`（既定: `~/.codex`） | 実測（in / cached / out / reasoning）＋レート制限時系列 | ✅ |
 | GitHub Copilot (VS Code Chat) | `workspaceStorage/<hash>/chatSessions/*.jsonl` + `workspaceStorage`（旧）または `globalStorage`（現行）の `debug-logs/<uuid>/main.jsonl` | 実測（in / cached / out）＋消費AI Credits | ✅ |
 | GitHub Copilot サブエージェント | `workspaceStorage/<hash>/GitHub.copilot-chat`（旧）または `globalStorage/github.copilot-chat`（現行）の `debug-logs/<親uuid>/*Subagent-*.jsonl` | 実測（in / cached / out / AI Credits、リクエスト単位） | ✅ |
@@ -32,6 +33,40 @@ aimetがトークン集計に使うのは、デバッグ用のテキストログ
 - Claude Codeの公式仕様は、トランスクリプトのJSONL内部形式がバージョン間で変更され得ることも明記しています。aimetは既知形式をfixtureで固定テストしますが、Claude Code更新後は実ログでの再検証が必要です。
 - Claude Codeで`CLAUDE_CODE_SKIP_PROMPT_HISTORY`または`--no-session-persistence`、Codexで`--ephemeral`を使ったセッションはローカルJSONLを保存しないため、aimetでは取得できません。
 - Claude Codeの現行デバッグログは`<Claude保存ルート>/debug/`、Codexの運用ログは`<Codex保存ルート>/log/`です。これらはセッション別トークンの集計元ではありません。Claude Codeの旧`logs/`ディレクトリは現行版では書き込まれません。
+
+#### Claude Codeの親・サブエージェント識別と集計
+
+Anthropicの公式仕様では、親会話の`sessionId`と、個々のサブエージェントの`agentId`は別の識別子です。ディスク上では次の階層になります。
+
+```text
+${CLAUDE_CONFIG_DIR:-~/.claude}/projects/<project-key>/
+  <session-id>.jsonl
+  <session-id>/
+    subagents/
+      agent-<agent-id>.jsonl
+```
+
+Agent SDKの公式`SessionStore`も、トランスクリプトを`sessionId`だけでなく`(projectKey, sessionId, subpath)`で識別し、子を`subpath = subagents/agent-<id>`として扱います。`SubagentStop`フックでも、親の`session_id`と子の`agent_id`、`agent_transcript_path`が別フィールドで渡されます。したがって、子JSONL内の`sessionId`だけをDBキーにすると、親または兄弟の行と衝突する可能性があります。
+
+aimetは以下の規則で取り込みます。
+
+- 親の`session_id`はログ内の`sessionId`（欠落時は主JSONLのファイル名）です。
+- `.../<parent-session-id>/subagents/agent-<agent-id>.jsonl`を公式配置の子ログと判定します。`subagents/`直下のその他のJSONLは取り込みません。
+- 子のDB上の`session_id`は`<parent-session-id>/agent-<agent-id>`とし、`parent_session_id`に親IDを保存します。これはaimet内で一意にするための複合IDであり、Claude Codeが発行する新しいセッションIDではありません。
+- 親と各子は別トランスクリプトの`assistant.message.usage`をそれぞれ合計し、どちらも`metric_scope = own`として保存します。レポートでは親1回＋各子1回だけを加算します。
+- 同じAPIメッセージが再送・ストリーミングで複数行に現れても、`message.id`で重複排除します。サブエージェントを再開して同じファイルに追記された場合も、再収集でDB行を更新し、行数を増やしません。
+- 子ログに`cwd`がない場合は、`subagents`と親IDの2階層をさかのぼった`<project-key>`からprojectをベストエフォートで復元します。`project-key`のハイフンが元パスの区切りか文字かは完全に逆変換できないため、正確性はログ内の`cwd`を優先します。
+
+親が子の最終結果を次の入力として読む場合、子の出力トークンと親の後続入力トークンの両方が計上されます。これらは別々のAPI利用で課金されるため、二重計上ではありません。二重計上となるのは、同じトランスクリプトまたは同じAPIメッセージを2回足した場合であり、上記のIDと重複排除で防ぎます。
+
+> [!IMPORTANT]
+> Claude Codeはサブエージェントトランスクリプトを`cleanupPeriodDays`（既定30日）に従って自動削除します。削除後の初回収集では子の利用量を復元できません。定期的に`aimet collect`を実行してください。一度aimetのDBへ取り込んだ行は、元JSONLが後で削除されても残ります。
+
+この実装の根拠となるAnthropic公式情報：
+
+- [Claude Code: サブエージェントのトランスクリプト配置・再開・保持期間](https://code.claude.com/docs/en/sub-agents)
+- [Claude Code Hooks: `session_id`、`agent_id`、`agent_transcript_path`](https://code.claude.com/docs/en/hooks#subagentstop)
+- [Claude Agent SDK SessionStore: `SessionKey`と子の`subpath`](https://code.claude.com/docs/en/agent-sdk/session-storage#subagent-transcripts)
 
 公式仕様・実装の参照先：
 
@@ -256,8 +291,8 @@ VS CodeとCopilot拡張は自動更新されるため、将来の再検証では
 
 **`test/parsers.test.js` — 各ツールパーサの正しさ**
 
-- **Claude**: assistantレコードの `usage` を合計し、`in` / `out` / `cacheR` / `cacheW` が期待値になること。リトライ/ストリーミングで**同じmessage IDが重複しても二重計上せず**、ターン数も過大計上しないこと。途中に壊れたJSONL行があっても無視して処理を続けること。
-- **Claude（未知モデル）**: 単価表にないモデルはコストを **`0`ではなく `null`** にすること。
+- **Claude**: assistantレコードの `usage` を合計し、`in` / `out` / `cacheR` / `cacheW` が期待値になること。リトライ/ストリーミングで**同じmessage IDが重複しても二重計上せず**、ターン数も過大計上しないこと。公式の`<session-id>/subagents/agent-<agent-id>.jsonl`配置では親と子を別行にし、同じ`sessionId`が記録されても衝突せず、親子合計に各1回だけ含まれること。途中に壊れたJSONL行があっても無視して処理を続けること。
+- **未知モデルとゼロ使用量**: 単価表にないモデルの非ゼロ使用量はコストを`null`にすること。一方、in / out / cacheR / cacheWがすべて明示的に`0`なら、未知モデルでも正確な`$0`とすること。`null`（未計測）はゼロとみなさないこと。
 - **Codex**: `token_count` の累積値から**最大値**を採用し、`input_tokens` から `cached_input_tokens` を差し引いて非キャッシュ入力に分離すること。reasoningトークンも取得すること。
 - **Codex（モデル不明）**: 既定単価にフォールバックしつつ、単価が推定であることを **`estimated: true`** で明示すること。
 - **Copilot（Chat）**: ObjectMutationLogの`Set` / `Push` / `Delete`を順番どおり復元できること。`main.jsonl`と`child_session_ref`で参照された各子JSONLはスパンIDで重複排除し、親子のトークンとnano-AIUが生ログの値に一致すること。
@@ -663,7 +698,7 @@ Anthropicは明示的にキャッシュポイントを指定する方式で、TT
 
 1. **正確に出せるものはそのまま出す** — 課金項目がすべて実測できる場合（Claude Code、Codex）、または実際の消費額そのものがログにある場合（Copilot Chatのクレジット）。表示に注記なし、または `(actual)`。
 2. **不確かさが残るものは推定フラグを付けて出す** — トークンは実測だが単価が確定できない、キャッシュ内訳が不明で上限側の見積もりになる、など。`estimated` フラグ（表示 `*` / `(estimated)`）で明示します。
-3. **根拠が足りないものは出さない** — 主要な課金項目（入力トークン）自体が記録されていない場合、過小評価の嘘をつくくらいなら **`-`（null）** にします。0円として集計されることはありません。
+3. **根拠が足りないものは出さない** — 主要な課金項目（入力トークン）自体が記録されていない場合、過小評価の嘘をつくくらいなら **`-`（null）** にします。未計測値が0円として集計されることはありません。例外は、全課金対象トークンが実測`0`の場合だけです。
 
 この方針の裏返しとして、トークン列も「未計測（`-`）」と「計測ゼロ（`0`）」を区別しています（前セクション参照）。
 
@@ -679,7 +714,7 @@ Anthropicは明示的にキャッシュポイントを指定する方式で、TT
 | 実際の消費額 | − | − | ✅ AI Credits実測 | ✅ AI Credits実測 | − |
 | モデル名 | ✅ | ✅ | ✅（resolvedModel） | ✅ | ✅ |
 | 時間（wall / active） | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 親子リンク | −（本体側が未記録） | ✅ | ✅ | ✅ | − |
+| 親子リンク | ✅（公式パスのsessionId / agentId） | ✅ | ✅ | ✅ | − |
 | 補足情報 | service_tier、サーバーツール使用回数 | レート制限使用率の時系列、effort | ttft、ツールラウンド数 | ttft、スパン構造 | ターン・ツールイベント |
 
 「−」はそのツールのログに記録が存在しないことを意味します（aimetの表示も `-`）。
@@ -693,7 +728,7 @@ cost = ( input × 入力単価
        + cacheW × キャッシュ書込単価 ) / 1,000,000
 ```
 
-単価は1Mトークンあたり米ドル。モデル名の**プレフィックス最長一致**で単価表（`src/pricing.ts` 内蔵）から引きます。例：ログのモデルが `gpt-5.5` で単価表に `gpt-5.5` がなければ `gpt-5` の単価が使われます。一致するものがない場合、コストは `-`（null）となり**0円として集計されることはありません**。
+単価は1Mトークンあたり米ドル。モデル名の**プレフィックス最長一致**で単価表（`src/pricing.ts` 内蔵）から引きます。例：ログのモデルが `gpt-5.5` で単価表に `gpt-5.5` がなければ `gpt-5` の単価が使われます。一致する単価がない非ゼロ使用量は`-`（null）となり、0円として集計しません。ただし、`input`、`output`、`cacheRead`、`cacheWrite`の4項目がすべて未計測ではなく明示的な`0`なら、どの単価を掛けても結果は同じなので、未知モデルでも正確な`$0`とします。リクエストが課金前に失敗し、生のルーティングID（例: `copilot/auto`）だけが残るケースを想定した処理です。
 
 単価は変動するため、`~/.aimet/pricing.json` で上書き・追加できます：
 
@@ -705,7 +740,7 @@ cost = ( input × 入力単価
 
 ### ツールごとのコスト計算方法
 
-**Claude Code — 完全内訳による正確なAPI換算**。APIリクエストごとの実測usageをmessageIdで重複排除して合算します。`input_tokens` はキャッシュ分を含まない生の値なのでそのまま使用でき、cacheR（0.1倍）・cacheW（割増）を含む**4項目すべてが実測**できる唯一のツールです。キャッシュ書き込みはTTLで単価が違うため（5分=1.25倍、1時間=2.0倍）、ログの `cache_creation` 内訳から**TTL別に正しく計算**します（単価表のcacheW列は5分TTLの単価。1時間TTL分は内部で1.6倍換算）。Anthropicの課金体系をログから完全に再現できるため、API換算値としての精度は最も高くなります。
+**Claude Code — 完全内訳による正確なAPI換算**。APIリクエストごとの実測usageをmessageIdで重複排除して合算します。`input_tokens` はキャッシュ分を含まない生の値なのでそのまま使用でき、cacheR（0.1倍）・cacheW（割増）を含む**4項目すべてが実測**できる唯一のツールです。キャッシュ書き込みはTTLで単価が違うため（5分=1.25倍、1時間=2.0倍）、ログの `cache_creation` 内訳から**TTL別に正しく計算**します（単価表のcacheW列は5分TTLの単価。1時間TTL分は内部で1.6倍換算）。親とサブエージェントは公式の`sessionId + agentId`で別セッションとして識別し、それぞれの独立したusageを1回だけ合算します。Anthropicの課金体系をログから完全に再現できるため、API換算値としての精度は最も高くなります。
 
 **Codex — 課金項目はすべて実測、cacheW欠落の影響なし**。`token_count` イベントの累積値（最大値）を使用します。(1) ログの `input_tokens` は `cached_input_tokens` を**含む**ため、二重計上を避けるべく差し引いて「非キャッシュ入力」として記録します。(2) `reasoning_output_tokens` は `output_tokens` の内数で、課金も出力単価に含まれるため、コスト計算では加算しません（参考値としてreasoning列に表示）。(3) cacheWは `-`（未計測）ですが、**OpenAIにはキャッシュ書き込み課金という料金項目自体が存在しない**（自動キャッシュ・書き込み無料）ため、コスト式から欠けている項目はありません。つまり「取れない＝不正確」ではなく、課金に関係する in / cacheR / out は全部実測です。モデル名がログにない古い形式では既定単価（gpt-5-codex）にフォールバックし、`estimated` を立てます。サブエージェント（別rollout）は独立台帳なので単純合算で二重計上になりません。
 
@@ -739,7 +774,7 @@ cost = ( input × 入力単価
 - **Copilotの集計範囲**: スパントレース由来の親子は `own`（自分のLLM呼び出しのみ）として保存します。過去形式の親が `tree`（子を含む累計）の場合は、集計時に子を再加算しません。report / session / Markdownはすべて同じ共通ロールアップを使います。
 - **Codexのトークン**: `token_count` は累積値のため最大値を採用。`input_tokens` は `cached_input_tokens` を含むため、共通スキーマでは差し引いて「非キャッシュ入力」として記録します。
 - **Codexのマルチエージェント（CLI 0.137以降）**: サブエージェントは別のrolloutファイルになり、`session_meta` の `thread_source: "subagent"` で判別します。子の `payload.session_id` には**親のID**が入っているため、キーには `payload.id`（自スレッドID）を使い、親は `parent_session_id` にリンクします（Copilotと同じグループビューが使えます）。トークン台帳はスレッドごとに独立しており二重計上はありません。
-- **Claude Codeのサブエージェント**: Taskツールの子は同じプロジェクトディレクトリに別JSONLとして保存され、通常のセッションとして集計に含まれます（漏れなし）。ただし現状のClaude Codeは子ログに親セッションIDを記録しないため、親子リンクは未対応です（[claude-code#32175](https://github.com/anthropics/claude-code/issues/32175)）。
+- **Claude Codeのサブエージェント**: 公式配置`<session-id>/subagents/agent-<agent-id>.jsonl`から親IDと子IDを取得し、子を`<parent-session-id>/agent-<agent-id>`の一意なDB行として親へリンクします。親・子とも`own`スコープなので、グループ集計は各トランスクリプトを1回だけ加算します。
 - **重複排除**: Claudeのログは同一APIメッセージが複数レコードに分かれることがあるため、messageIdで重複排除して集計します（detailはあるがまま出力）。
 - **推定値フラグ**: ログから実測できない値は `estimated` フラグ付きで区別します。
 - **ストリームパース**: ログは1ファイル数MBになるため逐次読みで処理します。未知のフィールド・イベント種別は無視し、ツールのバージョンアップに寛容です。

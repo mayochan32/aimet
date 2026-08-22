@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-08-23T00:00:02.000Z","sessionId":"parent-session","message":{"role":"user","content":"first task"}}
+{"type":"assistant","timestamp":"2026-08-23T00:00:03.000Z","sessionId":"parent-session","message":{"model":"claude-sonnet-4-6","id":"msg_alpha","role":"assistant","content":[{"type":"text","text":"first result"}],"usage":{"input_tokens":11,"output_tokens":7,"cache_read_input_tokens":3,"cache_creation_input_tokens":2}}}

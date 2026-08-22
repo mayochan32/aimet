@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-08-23T00:00:00.000Z","sessionId":"parent-session","cwd":"/proj/claude","message":{"role":"user","content":"delegate two tasks"}}
+{"type":"assistant","timestamp":"2026-08-23T00:00:01.000Z","sessionId":"parent-session","message":{"model":"claude-sonnet-4-6","id":"msg_parent","role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":100,"output_tokens":10,"cache_read_input_tokens":50,"cache_creation_input_tokens":5}}}

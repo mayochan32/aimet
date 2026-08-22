@@ -7,6 +7,16 @@ import { jsonlRecords, activeSeconds, durationSeconds } from './util.js';
 /**
  * Claude Code session logs:
  * ${CLAUDE_CONFIG_DIR:-~/.claude}/projects/<dashed-cwd>/<session-uuid>.jsonl
+ * Subagent transcripts:
+ * ${CLAUDE_CONFIG_DIR:-~/.claude}/projects/<dashed-cwd>/<session-uuid>/
+ *   subagents/agent-<agent-id>.jsonl
+ *
+ * Claude scopes a subagent transcript by the parent session id plus a
+ * subpath. Records in a child transcript can therefore carry the same
+ * sessionId as the parent. Use the documented path to create a distinct
+ * child key and link it back to the parent instead of trusting that field as
+ * a globally unique child id.
+ *
  * Each assistant record carries message.usage with a full token breakdown.
  * Token counts are per-request, so we sum them (deduped by message id).
  */
@@ -18,10 +28,19 @@ export const claudeParser: Parser = {
   },
 
   isLogFile(path: string) {
-    return path.endsWith('.jsonl');
+    if (!path.endsWith('.jsonl')) return false;
+    if (basename(dirname(path)) !== 'subagents') return true;
+    return /^agent-.+\.jsonl$/.test(basename(path));
   },
 
   async parseFile(path: string): Promise<SessionMetrics | null> {
+    const fileName = basename(path);
+    const logDir = dirname(path);
+    const isSubagent =
+      basename(logDir) === 'subagents' && /^agent-.+\.jsonl$/.test(fileName);
+    const fileSessionId = basename(path, '.jsonl');
+    const parentSessionId = isSubagent ? basename(dirname(logDir)) : null;
+
     // Anthropic logs do not report reasoning tokens separately -> null (= not recorded).
     const tokens: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: null };
     const timestamps: string[] = [];
@@ -69,14 +88,25 @@ export const claudeParser: Parser = {
     timestamps.sort();
     const first = timestamps[0];
     const last = timestamps[timestamps.length - 1];
-    // Fall back: recover project path from the dashed directory name.
-    const project = cwd || basename(dirname(path)).replace(/^-/, '/').replace(/-/g, '/');
+    // Fall back: recover the project from its dashed directory name. A child
+    // is nested two additional levels below that directory:
+    // <project>/<parent>/subagents/agent-<id>.jsonl.
+    const projectDir = isSubagent ? dirname(dirname(logDir)) : logDir;
+    const project = cwd || basename(projectDir).replace(/^-/, '/').replace(/-/g, '/');
+
+    // The official storage key is (parent sessionId, subagent subpath). Encode
+    // that pair into aimet's single session_id column. This remains unique even
+    // when every record inside the child transcript repeats the parent's id.
+    const resolvedSessionId = isSubagent && parentSessionId
+      ? `${parentSessionId}/${fileSessionId}`
+      : sessionId || fileSessionId;
 
     return {
       tool: 'claude',
-      sessionId: sessionId || basename(path, '.jsonl'),
+      sessionId: resolvedSessionId,
       logPath: path,
       project,
+      projectSource: 'log',
       model: model || 'unknown',
       startedAt: first,
       endedAt: last,
@@ -95,8 +125,10 @@ export const claudeParser: Parser = {
           )
         : null,
       estimated: false,
+      metricScope: 'own',
       turns,
       lastEventAt: last,
+      parentSessionId,
     };
   },
 };

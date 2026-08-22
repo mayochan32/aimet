@@ -57,7 +57,27 @@ test('pricing: invalid user entries are ignored, defaults preserved', async () =
     assert.deepEqual(t['my-model'], [1, 2, 0.1, 0], 'valid override accepted');
     assert.deepEqual(t['gpt-5'], [9, 8, 7, 0], 'built-in entry overridden');
     assert.equal('bad-shape' in t, false, 'invalid entry skipped');
-    assert.equal(costUsd('nonexistent-model', { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0 }), null);
+    assert.equal(
+      costUsd('copilot/auto', {
+        input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: null,
+      }),
+      0,
+      'explicit zero usage costs $0 even when the model is unknown'
+    );
+    assert.equal(
+      costUsd('nonexistent-model', {
+        input: 1, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0,
+      }),
+      null,
+      'non-zero usage still needs a matching price'
+    );
+    assert.equal(
+      costUsd('nonexistent-model', {
+        input: 0, output: 0, cacheRead: null, cacheWrite: 0, reasoning: null,
+      }),
+      null,
+      'an unrecorded field must not be mistaken for measured zero'
+    );
   } finally {
     if (oldHome === undefined) delete process.env.HOME;
     else process.env.HOME = oldHome;

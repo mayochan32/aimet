@@ -35,6 +35,29 @@ test('claude: unknown model yields null cost', async () => {
   assert.equal(m.costUsd, null, 'unknown model must not be costed as 0');
 });
 
+test('claude: official subagent path creates a distinct child linked to its parent', async () => {
+  const childPath = fx(
+    'claude-multi-agent/-proj-claude/parent-session/subagents/agent-alpha.jsonl'
+  );
+  const m = await claudeParser.parseFile(childPath);
+  assert.ok(m);
+  assert.equal(m.sessionId, 'parent-session/agent-alpha');
+  assert.equal(m.parentSessionId, 'parent-session');
+  assert.equal(m.project, '/proj/claude', 'project fallback must skip parent/subagents directories');
+  assert.equal(m.metricScope, 'own');
+  assert.equal(m.turns, 1);
+  assert.equal(m.tokens.input, 11);
+  assert.equal(m.tokens.output, 7);
+  assert.equal(m.tokens.cacheRead, 3);
+  assert.equal(m.tokens.cacheWrite, 2);
+  assert.equal(claudeParser.isLogFile(childPath), true);
+  assert.equal(
+    claudeParser.isLogFile(join(childPath, '..', 'not-an-agent.jsonl')),
+    false,
+    'only documented agent-*.jsonl files are accepted inside subagents/'
+  );
+});
+
 test('codex: uses max cumulative usage and splits cached input', async () => {
   const m = await codexParser.parseFile(fx('codex-basic.jsonl'));
   assert.ok(m);

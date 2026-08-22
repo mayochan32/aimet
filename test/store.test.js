@@ -122,6 +122,50 @@ test('collect: re-running over the same logs skips everything (idempotent)', asy
   store.close();
 });
 
+test('collect: Claude parent and subagents remain distinct and roll up exactly once', async () => {
+  const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-')), 'm.db');
+  const store = new Store(db);
+  const root = join(import.meta.dirname, 'fixtures', 'claude-multi-agent');
+
+  const first = await collect({ store, tools: ['claude'], roots: [root], quiet: true });
+  assert.deepEqual(first, { scanned: 3, inserted: 3, updated: 0, skipped: 0, errors: 0 });
+
+  const sessions = store.query(
+    `SELECT session_id, parent_session_id, input_tokens, output_tokens,
+            cache_read_tokens, cache_write_tokens
+       FROM sessions ORDER BY session_id`
+  );
+  assert.deepEqual(sessions.map((row) => ({ ...row })), [
+    {
+      session_id: 'parent-session', parent_session_id: null,
+      input_tokens: 100, output_tokens: 10, cache_read_tokens: 50, cache_write_tokens: 5,
+    },
+    {
+      session_id: 'parent-session/agent-alpha', parent_session_id: 'parent-session',
+      input_tokens: 11, output_tokens: 7, cache_read_tokens: 3, cache_write_tokens: 2,
+    },
+    {
+      session_id: 'parent-session/agent-beta', parent_session_id: 'parent-session',
+      input_tokens: 13, output_tokens: 9, cache_read_tokens: 4, cache_write_tokens: 1,
+    },
+  ]);
+
+  const report = reportRows(store, { tool: 'claude' });
+  assert.equal(report[0].sessions, 3);
+  assert.equal(report[0].input, 124);
+  assert.equal(report[0].output, 26);
+  assert.equal(report[0].cache_read, 57);
+  assert.equal(report[0].cache_write, 8);
+  const summary = sessionSummary(store, { tool: 'claude', id: 'parent-session' });
+  assert.match(summary, /agent-alpha/);
+  assert.match(summary, /agent-beta/);
+  assert.match(summary, /TOTAL\(parent \+ 2 subagents\)/);
+
+  const second = await collect({ store, tools: ['claude'], roots: [root], quiet: true });
+  assert.deepEqual(second, { scanned: 3, inserted: 0, updated: 0, skipped: 3, errors: 0 });
+  store.close();
+});
+
 test('store deterministically keeps Copilot main span over chat snapshot', () => {
   const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-')), 'm.db');
   const store = new Store(db);
