@@ -1,4 +1,4 @@
-# aimetのWindows実機Copilot計測・検証作業依頼書
+# aimetのWindows互換性・Copilot実機計測検証作業依頼書
 
 ## この文書を読むAIへ
 
@@ -35,7 +35,8 @@ aimetは、Claude Code、Codex CLI、GitHub CopilotがローカルPCに保存し
 | `src/parsers/copilotsubagent.ts` | `main.jsonl` の親と、`child_session_ref`で参照された子（`runSubagent-*` / `searchSubagent-*`など）のスパン計測 |
 | `src/store.ts` | DBスキーマ、冪等upsert、同じ親IDでの `main.jsonl` 優先 |
 | `src/report.ts` / `src/markdown.ts` | `own` / `tree` に基づく共通の親子集計 |
-| `src/paths.ts` | macOS / Windows / LinuxのVS Codeログパス解決 |
+| `src/paths.ts` | macOS / Windows / LinuxのClaude、Codex、VS Codeログパス解決 |
+| `src/init.ts` | 各ツールへのフックと`/metrics`プロンプトの配置 |
 | `test/e2e/copilot-windows.ps1` | Windowsでシングル・マルチを起動する受け入れ試験 |
 | `test/e2e/verify-copilot-logs.mjs` | aimet本体のパーサを使わず、生ログとDBを照合する独立検算器 |
 | `test/fixtures/real/` | macOS実ログを匿名化したgolden fixture |
@@ -85,6 +86,12 @@ VS CodeのGitHub Copilot Chatでサブエージェントを使った場合、親
 5. 子の `parent_session_id` が正しい親を指す。
 6. 親子合計で各セッションが1回ずつだけ加算される。
 7. 同じログを再取り込みしても、DBに行が増えず更新も発生しない。
+8. `CLAUDE_CONFIG_DIR`で変更したClaude Codeの保存ルートから、`--dir`なしで収集できる。
+9. `CODEX_HOME`で変更したCodexの保存ルートから、`--dir`なしで収集できる。
+10. `VSCODE_PORTABLE` / `VSCODE_APPDATA` / `APPDATA`の優先順位がVS Code公式実装と同じであり、Portable ModeのCopilotログを収集できる。
+11. `aimet init claude` / `codex` / `copilot`が、収集と同じ変更先へフックまたはプロンプトを配置する。
+
+`aimet init copilot`のStopフックはVS CodeのUserデータではなく`%USERPROFILE%\.copilot\hooks\aimet.json`に配置されます。`VSCODE_PORTABLE`や`VSCODE_APPDATA`に追従するのは、VS Code側の`User\prompts\metrics.prompt.md`です。この2つを混同しないでください。
 
 ## AIの作業範囲と禁止事項
 
@@ -113,6 +120,8 @@ VS CodeのGitHub Copilot Chatでサブエージェントを使った場合、親
 8. 各子の `parent_session_id` が存在する親セッションを指す。
 9. 2回目の取り込みが `+0 new, ~0 updated` になる。
 10. 上記の判定を、コンソール出力と `windows-copilot-e2e.json` の両方で報告する。
+11. `VSCODE_PORTABLE` / `VSCODE_APPDATA` / `CLAUDE_CONFIG_DIR` / `CODEX_HOME`の自動テストがすべて成功する。
+12. `aimet init <tool> --dry-run`の出力に、各環境変数で指定したWindowsパスが表示される。
 
 ## この文書の以降の構成
 
@@ -213,9 +222,80 @@ npm test
 Windows collect discovers Copilot logs from APPDATA without --dir
 ```
 
+今回の保存ルート対応に関する次のテストも、すべて成功必須です。
+
+```text
+VS Code user-data roots honor portable and app-data overrides in official precedence
+collect discovers Copilot logs from VSCODE_PORTABLE without --dir
+Claude and Codex state roots honor official environment variables on every OS
+collect discovers Claude and Codex logs from configured state roots
+```
+
+### 4.1 `aimet init`のWindows配置先を自動確認する
+
+次のブロックを同じPowerShellでそのまま実行してください。ユーザーの実設定には書き込まず、`--dry-run`の表示先を自動判定します。環境変数の変更は現在のPowerShellプロセス内だけで、終了時に元の値へ戻します。
+
+```powershell
+$oldClaude = $env:CLAUDE_CONFIG_DIR
+$oldCodex = $env:CODEX_HOME
+$oldPortable = $env:VSCODE_PORTABLE
+$oldAppData = $env:VSCODE_APPDATA
+$checkRoot = Join-Path ([IO.Path]::GetTempPath()) ("aimet path check 日本語 " + [guid]::NewGuid())
+
+try {
+  $env:CLAUDE_CONFIG_DIR = Join-Path $checkRoot 'Claude state'
+  $env:CODEX_HOME = Join-Path $checkRoot 'Codex state'
+  $env:VSCODE_PORTABLE = Join-Path $checkRoot 'VS Code Portable'
+  Remove-Item Env:VSCODE_APPDATA -ErrorAction SilentlyContinue
+
+  $claudeOut = (& node dist/cli.js init claude --dry-run) -join "`n"
+  $codexOut = (& node dist/cli.js init codex --dry-run) -join "`n"
+  $copilotOut = (& node dist/cli.js init copilot --dry-run) -join "`n"
+
+  $expectedClaude = Join-Path $env:CLAUDE_CONFIG_DIR 'settings.json'
+  $expectedCodex = Join-Path $env:CODEX_HOME 'hooks.json'
+  $expectedPrompt = Join-Path $env:VSCODE_PORTABLE 'user-data\User\prompts\metrics.prompt.md'
+
+  if (!$claudeOut.Contains($expectedClaude)) { throw "Claude init path mismatch: $claudeOut" }
+  if (!$codexOut.Contains($expectedCodex)) { throw "Codex init path mismatch: $codexOut" }
+  if (!$copilotOut.Contains($expectedPrompt)) { throw "Copilot prompt path mismatch: $copilotOut" }
+
+  Write-Host 'Windows configurable-path init check passed.'
+}
+finally {
+  $env:CLAUDE_CONFIG_DIR = $oldClaude
+  $env:CODEX_HOME = $oldCodex
+  $env:VSCODE_PORTABLE = $oldPortable
+  $env:VSCODE_APPDATA = $oldAppData
+}
+```
+
+次が表示されれば成功です。
+
+```text
+Windows configurable-path init check passed.
+```
+
+`try`内のどこかで停止した場合は、出力を省略せず報告してください。
+
 ## 5. Copilotの実機E2Eを実行する
 
 VS Codeを起動し、Copilotにサインイン済みの状態にしたまま、PowerShellで次を実行します。
+
+通常のVS Code Stable / Insiders / VSCodiumを使う場合、追加設定は不要です。Portable Mode、`VSCODE_APPDATA`、またはVS Codeの`--user-data-dir`を使っている場合は、E2Eスクリプトに実ログのUserディレクトリを明示します。実際に使っている方式の1つだけを実行してください。
+
+```powershell
+# Portable Mode
+$env:AIMET_COPILOT_DIR = Join-Path $env:VSCODE_PORTABLE 'user-data\User'
+
+# VSCODE_APPDATA + Stableの例
+$env:AIMET_COPILOT_DIR = Join-Path $env:VSCODE_APPDATA 'Code\User'
+
+# code --user-data-dir D:\VSCodeData の例
+$env:AIMET_COPILOT_DIR = 'D:\VSCodeData\User'
+```
+
+`--user-data-dir`はVS Codeの起動引数であり、別プロセスのaimetからは取得できないため、この場合のみ明示指定が仕様上必要です。
 
 ```powershell
 npm run test:e2e:copilot-windows
@@ -252,10 +332,12 @@ Windows Copilot E2E passed. Result: C:\Users\...\AppData\Local\Temp\...\windows-
 
 ## 7. 実行後に共有するもの
 
-次の2つをこの作業タスクに貼り付けてください。
+次の4つをこの作業タスクに貼り付けてください。
 
-1. PowerShellの最後の出力（成功メッセージと取り込み結果を含む範囲）
-2. 表示された `windows-copilot-e2e.json` の内容
+1. `git rev-parse HEAD`の出力
+2. `npm test`のテスト合計、成功、失敗、skip数が分かる最後の部分
+3. `Windows configurable-path init check passed.`の表示
+4. Copilot E2EのPowerShell最後の出力と、表示された`windows-copilot-e2e.json`の内容
 
 `captured logs` フォルダにはプロンプトやファイル内容が含まれる可能性があるため、フォルダ全体はそのまま共有しないでください。追加調査が必要な場合のみ、共有範囲を確認します。
 
