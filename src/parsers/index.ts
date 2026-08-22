@@ -30,3 +30,8 @@ export const parsers: Parser[] = [
 export function parserFor(tool: string): Parser | undefined {
   return parsers.find((p) => p.tool === (tool as Tool));
 }
+
+/** Select the parser that owns an exact log path when a tool has multiple formats. */
+export function parserForFile(tool: string, path: string): Parser | undefined {
+  return parsers.find((p) => p.tool === (tool as Tool) && p.isLogFile(path));
+}

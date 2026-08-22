@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, copyFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir, platform } from 'node:os';
-import { claudeConfigDir, codexHome, vscodeUserDirs } from './paths.js';
+import { claudeConfigDir, codexHome, copilotHome, vscodeUserDirs } from './paths.js';
 
 const HOOK_CMD = (tool: string) => `aimet hook ${tool}`;
 
@@ -22,6 +22,39 @@ function hasNestedHookCommand(list: unknown[], command: string): boolean {
       (hook) => isRecord(hook) && hook.type === 'command' && hook.command === command
     )
   );
+}
+
+/** Remove only aimet's obsolete direct-command form, preserving all user hooks. */
+function removeDirectHookCommand(list: unknown[], command: string): boolean {
+  const kept = list.filter(
+    (entry) => !(isRecord(entry) && entry.type === 'command' && entry.command === command)
+  );
+  if (kept.length === list.length) return false;
+  list.splice(0, list.length, ...kept);
+  return true;
+}
+
+function ensureNestedHook(
+  hooks: Record<string, unknown[]>,
+  event: string,
+  command: string,
+  timeout?: number
+): boolean {
+  const list = (hooks[event] ??= []) as unknown[];
+  if (hasNestedHookCommand(list, command)) return false;
+  list.push({ hooks: [{ type: 'command', command, ...(timeout ? { timeout } : {}) }] });
+  return true;
+}
+
+function ensureDirectHook(
+  hooks: Record<string, unknown[]>,
+  event: string,
+  command: string
+): boolean {
+  const list = (hooks[event] ??= []) as unknown[];
+  if (hasDirectHookCommand(list, command)) return false;
+  list.push({ type: 'command', command });
+  return true;
 }
 
 /**
@@ -60,19 +93,20 @@ function writeFile(path: string, content: string, dryRun: boolean, log: string[]
   renameSync(tmp, path); // atomic on the same filesystem
 }
 
-/** Register the SessionEnd hook + /metrics command for Claude Code. */
+/** Register parent/child completion hooks + /metrics command for Claude Code. */
 export function initClaude(dryRun: boolean, configDir: string = claudeConfigDir()): string {
   const log: string[] = [];
   const settingsPath = join(configDir, 'settings.json');
   const settings = existsSync(settingsPath) ? readJson(settingsPath) : {};
   const hooks = (settings.hooks ??= {}) as Record<string, unknown[]>;
-  const entry = { hooks: [{ type: 'command', command: HOOK_CMD('claude') }] };
-  const list = (hooks.SessionEnd ??= []) as unknown[];
-  if (!hasNestedHookCommand(list, HOOK_CMD('claude'))) {
-    list.push(entry);
+  const changed = [
+    ensureNestedHook(hooks, 'SessionEnd', HOOK_CMD('claude')),
+    ensureNestedHook(hooks, 'SubagentStop', HOOK_CMD('claude')),
+  ].some(Boolean);
+  if (changed) {
     writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', dryRun, log);
   } else {
-    log.push(`hook already registered in ${settingsPath}`);
+    log.push(`hooks already registered in ${settingsPath}`);
   }
 
   writeFile(
@@ -94,41 +128,57 @@ export function initClaude(dryRun: boolean, configDir: string = claudeConfigDir(
   return log.join('\n');
 }
 
-/** Register hooks.json + /metrics custom prompt for Codex CLI. */
+/** Register current Codex hooks.json schema + an aimet metrics skill. */
 export function initCodex(dryRun: boolean, configDir: string = codexHome()): string {
   const log: string[] = [];
   const hooksPath = join(configDir, 'hooks.json');
   const cfg = existsSync(hooksPath) ? readJson(hooksPath) : {};
   const hooks = (cfg.hooks ??= {}) as Record<string, unknown[]>;
-  const list = (hooks.SessionEnd ??= []) as unknown[];
-  if (!hasDirectHookCommand(list, HOOK_CMD('codex'))) {
-    list.push({ type: 'command', command: HOOK_CMD('codex') });
+  const sessionEnd = (hooks.SessionEnd ??= []) as unknown[];
+  const changed = [
+    removeDirectHookCommand(sessionEnd, HOOK_CMD('codex')),
+    ensureNestedHook(hooks, 'SessionEnd', HOOK_CMD('codex'), 3),
+    ensureNestedHook(hooks, 'SubagentStop', HOOK_CMD('codex')),
+  ].some(Boolean);
+  if (changed) {
     writeFile(hooksPath, JSON.stringify(cfg, null, 2) + '\n', dryRun, log);
-    log.push('note: verify the hook fires with `codex` -> /hooks (schema may vary by version)');
   } else {
-    log.push(`hook already registered in ${hooksPath}`);
+    log.push(`hooks already registered in ${hooksPath}`);
   }
 
   writeFile(
-    join(configDir, 'prompts', 'metrics.md'),
-    [
-      'Show my AI usage metrics.',
-      '',
-      'Run the shell command `aimet hook codex` and then `aimet session --tool codex`,',
-      'and present the output to me unchanged. If I ask for a weekly view,',
-      'run `aimet report --period weekly --by project`.',
-      '',
-    ].join('\n'),
+    join(configDir, 'skills', 'aimet-metrics', 'SKILL.md'),
+    readFileSync(
+      new URL('../integrations/codex/skills/aimet-metrics/SKILL.md', import.meta.url),
+      'utf8'
+    ),
     dryRun,
     log
   );
+  if (existsSync(join(configDir, 'prompts', 'metrics.md'))) {
+    log.push('note: legacy prompts/metrics.md was left untouched; use $aimet-metrics');
+  }
   return log.join('\n');
+}
+
+function installCopilotHooks(path: string, dryRun: boolean, log: string[]): void {
+  const cfg = existsSync(path) ? readJson(path) : {};
+  const hooks = (cfg.hooks ??= {}) as Record<string, unknown[]>;
+  const changed = [
+    cfg.version !== 1,
+    ensureDirectHook(hooks, 'Stop', HOOK_CMD('copilot')),
+    ensureDirectHook(hooks, 'SubagentStop', HOOK_CMD('copilot')),
+  ].some(Boolean);
+  cfg.version = 1;
+  if (changed) writeFile(path, JSON.stringify(cfg, null, 2) + '\n', dryRun, log);
+  else log.push(`hooks already registered in ${path}`);
 }
 
 /**
  * Register a VS Code agent hook (Preview) + /metrics prompt file for
  * GitHub Copilot Chat. Hook location: ~/.copilot/hooks/*.json (user level),
- * same event schema as Claude Code. Fires on Stop (session ends).
+ * same event names as Claude Code. Stop fires when an agent turn completes;
+ * SubagentStop captures child-agent completion.
  */
 export function initCopilot(
   dryRun: boolean,
@@ -144,17 +194,12 @@ export function initCopilot(
   const env = options.env ?? process.env;
   const os = options.os ?? platform();
   const cwd = options.cwd ?? env.VSCODE_CWD ?? process.cwd();
-  const hooksPath = join(home, '.copilot', 'hooks', 'aimet.json');
-  const cfg = existsSync(hooksPath) ? readJson(hooksPath) : {};
-  const hooks = (cfg.hooks ??= {}) as Record<string, unknown[]>;
-  const list = (hooks.Stop ??= []) as unknown[];
-  if (!hasDirectHookCommand(list, HOOK_CMD('copilot'))) {
-    list.push({ type: 'command', command: HOOK_CMD('copilot') });
-    writeFile(hooksPath, JSON.stringify(cfg, null, 2) + '\n', dryRun, log);
-    log.push('note: VS Code agent hooks are in Preview. Verify with /hooks in Copilot Chat');
-  } else {
-    log.push(`hook already registered in ${hooksPath}`);
+  const standardHome = join(home, '.copilot');
+  const configuredHome = copilotHome(env, os, home, cwd);
+  for (const root of [...new Set([standardHome, configuredHome])]) {
+    installCopilotHooks(join(root, 'hooks', 'aimet.json'), dryRun, log);
   }
+  log.push('note: VS Code agent hooks are in Preview; Copilot CLI also reads these user hooks');
 
   // /metrics prompt file into every VS Code user-data dir that exists. For a
   // dry run, retain explicitly configured roots even before they are created

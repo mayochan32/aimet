@@ -55,7 +55,7 @@ test('init dry-run reports missing configured roots without creating them', () =
   assert.ok(claudeOutput.includes(join(claudeRoot, 'settings.json')));
   assert.ok(claudeOutput.includes(join(claudeRoot, 'commands', 'metrics.md')));
   assert.ok(codexOutput.includes(join(codexRoot, 'hooks.json')));
-  assert.ok(codexOutput.includes(join(codexRoot, 'prompts', 'metrics.md')));
+  assert.ok(codexOutput.includes(join(codexRoot, 'skills', 'aimet-metrics', 'SKILL.md')));
   assert.ok(portableOutput.includes(
     join(portableRoot, 'user-data', 'User', 'prompts', 'metrics.prompt.md')
   ));
@@ -105,7 +105,7 @@ test('normal init creates files, preserves settings, backs up, and stays idempot
   assert.equal(readFileSync(`${codexHooks}.bak`, 'utf8'), originalCodex);
   assert.equal(readFileSync(`${copilotHooks}.bak`, 'utf8'), originalCopilot);
   assert.ok(existsSync(join(claudeRoot, 'commands', 'metrics.md')));
-  assert.ok(existsSync(join(codexRoot, 'prompts', 'metrics.md')));
+  assert.ok(existsSync(join(codexRoot, 'skills', 'aimet-metrics', 'SKILL.md')));
   assert.ok(existsSync(join(vscodeUser, 'prompts', 'metrics.prompt.md')));
 
   initClaude(false, claudeRoot);
@@ -124,8 +124,12 @@ test('normal init creates files, preserves settings, backs up, and stays idempot
   assert.equal(codex.approval, 'ask');
   assert.equal(copilot.version, 1);
   assert.equal(nestedCommandCount(claude.hooks.SessionEnd, 'aimet hook claude'), 1);
-  assert.equal(directCommandCount(codex.hooks.SessionEnd, 'aimet hook codex'), 1);
+  assert.equal(nestedCommandCount(claude.hooks.SubagentStop, 'aimet hook claude'), 1);
+  assert.equal(nestedCommandCount(codex.hooks.SessionEnd, 'aimet hook codex'), 1);
+  assert.equal(nestedCommandCount(codex.hooks.SubagentStop, 'aimet hook codex'), 1);
+  assert.equal(directCommandCount(codex.hooks.SessionEnd, 'aimet hook codex'), 0);
   assert.equal(directCommandCount(copilot.hooks.Stop, 'aimet hook copilot'), 1);
+  assert.equal(directCommandCount(copilot.hooks.SubagentStop, 'aimet hook copilot'), 1);
 });
 
 test('similar text or a wrong-shaped command does not masquerade as an installed hook', () => {
@@ -171,8 +175,44 @@ test('similar text or a wrong-shaped command does not masquerade as an installed
   const codex = json(codexHooks);
   const copilot = json(copilotHooks);
   assert.equal(nestedCommandCount(claude.hooks.SessionEnd, 'aimet hook claude'), 1);
-  assert.equal(directCommandCount(codex.hooks.SessionEnd, 'aimet hook codex'), 1);
+  assert.equal(nestedCommandCount(codex.hooks.SessionEnd, 'aimet hook codex'), 1);
+  assert.equal(directCommandCount(codex.hooks.SessionEnd, 'aimet hook codex'), 0);
   assert.equal(directCommandCount(copilot.hooks.Stop, 'aimet hook copilot'), 1);
+});
+
+test('Codex init migrates only aimet legacy hooks and Copilot honors COPILOT_HOME', () => {
+  const base = mkdtempSync(join(tmpdir(), 'aimet-init-migrate-'));
+  const codexRoot = join(base, 'codex');
+  const codexHooks = join(codexRoot, 'hooks.json');
+  const home = join(base, 'home');
+  const configuredCopilot = join(base, 'custom copilot');
+  mkdirSync(codexRoot, { recursive: true });
+  writeFileSync(codexHooks, JSON.stringify({ hooks: { SessionEnd: [
+    { type: 'command', command: 'aimet hook codex' },
+    { type: 'command', command: 'keep me' },
+  ] } }));
+
+  initCodex(false, codexRoot);
+  initCopilot(false, {
+    home,
+    env: { COPILOT_HOME: configuredCopilot },
+    os: platform(),
+    cwd: base,
+  });
+
+  const codex = json(codexHooks);
+  assert.equal(directCommandCount(codex.hooks.SessionEnd, 'aimet hook codex'), 0);
+  assert.equal(directCommandCount(codex.hooks.SessionEnd, 'keep me'), 1);
+  assert.equal(nestedCommandCount(codex.hooks.SessionEnd, 'aimet hook codex'), 1);
+  for (const path of [
+    join(home, '.copilot', 'hooks', 'aimet.json'),
+    join(configuredCopilot, 'hooks', 'aimet.json'),
+  ]) {
+    const cfg = json(path);
+    assert.equal(cfg.version, 1);
+    assert.equal(directCommandCount(cfg.hooks.Stop, 'aimet hook copilot'), 1);
+    assert.equal(directCommandCount(cfg.hooks.SubagentStop, 'aimet hook copilot'), 1);
+  }
 });
 
 test('normal Copilot init does not create a missing configured VS Code user directory', () => {

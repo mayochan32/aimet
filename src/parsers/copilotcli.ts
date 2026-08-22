@@ -1,5 +1,6 @@
-import { basename, dirname } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { Parser, SessionMetrics, TokenUsage } from '../types.js';
+import { copilotHome } from '../paths.js';
 import { jsonlRecords, activeSeconds, durationSeconds } from './util.js';
 
 /**
@@ -22,7 +23,7 @@ export const copilotCliParser: Parser = {
   tool: 'copilot-cli',
 
   defaultDirs() {
-    return ['.copilot/session-state'];
+    return [join(copilotHome(), 'session-state')];
   },
 
   isLogFile(path: string) {
