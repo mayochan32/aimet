@@ -127,8 +127,15 @@ export function initCopilot(dryRun: boolean): string {
     log.push(`hook already registered in ${hooksPath}`);
   }
 
-  // /metrics prompt file into every VS Code user-data dir that exists.
-  const userDirs = vscodeUserDirs().filter((d) => existsSync(d));
+  // /metrics prompt file into every VS Code user-data dir that exists. For a
+  // dry run, retain explicitly configured roots even before they are created
+  // so the caller can verify the resolved destination without changing disk.
+  const hasConfiguredUserDataRoot = Boolean(
+    process.env.VSCODE_PORTABLE?.trim() || process.env.VSCODE_APPDATA?.trim()
+  );
+  const userDirs = vscodeUserDirs().filter(
+    (d) => existsSync(d) || (dryRun && hasConfiguredUserDataRoot)
+  );
   const prompt = [
     '---',
     'description: Show AI usage metrics for my Copilot sessions',

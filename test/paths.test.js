@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { platform, tmpdir } from 'node:os';
-import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
 import {
@@ -98,6 +98,30 @@ test('collect discovers Copilot logs from VSCODE_PORTABLE without --dir', async 
     else process.env.VSCODE_APPDATA = oldAppData;
     if (oldExplicit === undefined) delete process.env.AIMET_COPILOT_DIR;
     else process.env.AIMET_COPILOT_DIR = oldExplicit;
+  }
+});
+
+test('Copilot init dry-run reports a configured portable prompt path before it exists', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'aimet-vscode-portable-init-'));
+  const portable = join(base, 'not created 日本語');
+  const promptPath = join(portable, 'user-data', 'User', 'prompts', 'metrics.prompt.md');
+  const oldPortable = process.env.VSCODE_PORTABLE;
+  const oldAppData = process.env.VSCODE_APPDATA;
+  process.env.VSCODE_PORTABLE = portable;
+  delete process.env.VSCODE_APPDATA;
+
+  try {
+    assert.equal(existsSync(portable), false);
+    const { initCopilot } = await import('../dist/init.js');
+    const output = initCopilot(true);
+    assert.ok(output.includes(`[dry-run] would write ${promptPath}`));
+    assert.equal(output.includes('no VS Code user dir found'), false);
+    assert.equal(existsSync(portable), false);
+  } finally {
+    if (oldPortable === undefined) delete process.env.VSCODE_PORTABLE;
+    else process.env.VSCODE_PORTABLE = oldPortable;
+    if (oldAppData === undefined) delete process.env.VSCODE_APPDATA;
+    else process.env.VSCODE_APPDATA = oldAppData;
   }
 });
 
