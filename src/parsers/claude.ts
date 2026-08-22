@@ -1,10 +1,12 @@
-import { basename, dirname } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { Parser, SessionMetrics, TokenUsage } from '../types.js';
 import { costUsd } from '../pricing.js';
+import { claudeConfigDir } from '../paths.js';
 import { jsonlRecords, activeSeconds, durationSeconds } from './util.js';
 
 /**
- * Claude Code session logs: ~/.claude/projects/<dashed-cwd>/<session-uuid>.jsonl
+ * Claude Code session logs:
+ * ${CLAUDE_CONFIG_DIR:-~/.claude}/projects/<dashed-cwd>/<session-uuid>.jsonl
  * Each assistant record carries message.usage with a full token breakdown.
  * Token counts are per-request, so we sum them (deduped by message id).
  */
@@ -12,7 +14,7 @@ export const claudeParser: Parser = {
   tool: 'claude',
 
   defaultDirs() {
-    return ['.claude/projects'];
+    return [join(claudeConfigDir(), 'projects')];
   },
 
   isLogFile(path: string) {

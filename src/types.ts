@@ -70,7 +70,7 @@ export const GAP_THRESHOLD_MS = 5 * 60 * 1000;
 
 export interface Parser {
   tool: Tool;
-  /** default log locations to scan, absolute or relative to $HOME */
+  /** environment-aware default log locations, absolute or relative to $HOME */
   defaultDirs(): string[];
   /** glob-ish predicate for candidate log files */
   isLogFile(path: string): boolean;

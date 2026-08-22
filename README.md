@@ -12,13 +12,37 @@
 
 | ツール | ログの場所 | 取得できるトークン | 状態 |
 |---|---|---|---|
-| Claude Code | `~/.claude/projects/**/*.jsonl` | 実測（in / out / cacheR / cacheW、1h/5mキャッシュ内訳） | ✅ |
-| Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl` | 実測（in / cached / out / reasoning）＋レート制限時系列 | ✅ |
+| Claude Code | `<Claude保存ルート>/projects/**/*.jsonl`（既定: `~/.claude`） | 実測（in / out / cacheR / cacheW、1h/5mキャッシュ内訳） | ✅ |
+| Codex CLI | `<Codex保存ルート>/sessions/**/rollout-*.jsonl`（既定: `~/.codex`） | 実測（in / cached / out / reasoning）＋レート制限時系列 | ✅ |
 | GitHub Copilot (VS Code Chat) | `workspaceStorage/<hash>/chatSessions/*.jsonl` + `workspaceStorage`（旧）または `globalStorage`（現行）の `debug-logs/<uuid>/main.jsonl` | 実測（in / cached / out）＋消費AI Credits | ✅ |
 | GitHub Copilot サブエージェント | `workspaceStorage/<hash>/GitHub.copilot-chat`（旧）または `globalStorage/github.copilot-chat`（現行）の `debug-logs/<親uuid>/*Subagent-*.jsonl` | 実測（in / cached / out / AI Credits、リクエスト単位） | ✅ |
 | GitHub Copilot CLI | `~/.copilot/session-state/<uuid>/events.jsonl` | 実測（**出力トークンのみ**） | ✅ |
 
-> Copilot Chat（VS Code）のスナップショットは `User/workspaceStorage/`、デバッグログは従来版では同じ `workspaceStorage` 配下、現行版では `User/globalStorage/github.copilot-chat/` にあります。aimetはStable / Insiders / VSCodiumの新旧両方を自動探索します。非標準パスは `--dir` または `AIMET_COPILOT_DIR`（Windowsは `;`区切り、macOS/Linuxは `:`区切り）で指定できます。記録されるのは**Chat/エージェントモードの対話のみ**です。
+### Claude Code / Codexログの保存仕様と自動探索
+
+aimetがトークン集計に使うのは、デバッグ用のテキストログではなく、各製品がセッション再開用に保存するJSONLトランスクリプトです。`aimet collect`を`--dir`なしで実行した場合、次の優先順位で保存ルートを決定します。`aimet init claude/codex`も同じルートを使うため、変更先と既定先の別々の場所へ設定を書くことはありません。
+
+| ツール | 保存ルート | 主セッション | サブエージェント |
+|---|---|---|---|
+| Claude Code | `CLAUDE_CONFIG_DIR`があればその値、なければ`~/.claude` | `projects/<project>/<session-id>.jsonl` | `projects/<project>/<session-id>/subagents/agent-<agent-id>.jsonl` |
+| Codex | `CODEX_HOME`があればその値、なければ`~/.codex` | `sessions/YYYY/MM/DD/rollout-*.jsonl` | 親とは別の`rollout-*.jsonl`（ログ内の親IDで紐付け） |
+
+- Windowsの`~/.claude`と`~/.codex`はユーザーホーム（通常は`%USERPROFILE%`）配下です。aimetはNode.jsが解決したホームを使い、Windows / macOS / Linuxで同じ規則を適用します。
+- `--dir <path>`を指定した収集では、調査用の明示パスを優先し、上記の自動探索ルートを使いません。
+- Claude Codeの公式仕様は、トランスクリプトのJSONL内部形式がバージョン間で変更され得ることも明記しています。aimetは既知形式をfixtureで固定テストしますが、Claude Code更新後は実ログでの再検証が必要です。
+- Claude Codeで`CLAUDE_CODE_SKIP_PROMPT_HISTORY`または`--no-session-persistence`、Codexで`--ephemeral`を使ったセッションはローカルJSONLを保存しないため、aimetでは取得できません。
+- Claude Codeの現行デバッグログは`<Claude保存ルート>/debug/`、Codexの運用ログは`<Codex保存ルート>/log/`です。これらはセッション別トークンの集計元ではありません。Claude Codeの旧`logs/`ディレクトリは現行版では書き込まれません。
+
+公式仕様・実装の参照先：
+
+- [Claude Code: Where transcripts are stored](https://code.claude.com/docs/en/sessions#where-transcripts-are-stored)
+- [Claude Code: Application dataとWindowsの保存ルート](https://code.claude.com/docs/en/claude-directory#application-data)
+- [Claude Code: サブエージェントのトランスクリプト](https://code.claude.com/docs/en/sub-agents)
+- [OpenAI: Codexの`CODEX_HOME`仕様](https://developers.openai.com/codex/environment-variables)
+- [OpenAI公式ソース: rolloutの保存先とファイル名](https://github.com/openai/codex/blob/main/codex-rs/rollout/src/recorder.rs)
+- [OpenAI: Codex CLIの`--ephemeral`](https://developers.openai.com/codex/cli/reference)
+
+> Copilot Chat（VS Code）のスナップショットは `User/workspaceStorage/`、デバッグログは従来版では同じ `workspaceStorage` 配下、現行版では `User/globalStorage/github.copilot-chat/` にあります。aimetはStable / Insiders / VSCodiumの新旧両方に加え、`VSCODE_PORTABLE`、`VSCODE_APPDATA`、Windowsの`APPDATA`、Linuxの`XDG_CONFIG_HOME`を自動探索に反映します。それ以外の非標準パスは `--dir` または `AIMET_COPILOT_DIR`（Windowsは `;`区切り、macOS/Linuxは `:`区切り）で指定できます。記録されるのは**Chat/エージェントモードの対話のみ**です。
 >
 > **Copilot CLI（`@github/copilot`）の注意**: レポート上は `copilot`（Chat版）と区別するため **`copilot-cli`** という別ツールとして集計します。CLIのログは**出力トークンしか記録しない**（入力・キャッシュのフィールドが存在しない）ため、`in` / `cacheR` / `cacheW` は **`-`（null）**、コストも **`-`（null）** になります。取得できるのは出力トークン・実行時間・ターン数・モデル・プロジェクトです。
 
@@ -67,15 +91,19 @@ VS Code Copilot Chatのローカルログは、VS Code／Copilot Chatのバー�
 
 #### OS・VS Code製品ごとの自動探索
 
-`aimet collect`を`--dir`なしで実行すると、まず次のVS Code Userディレクトリを組み立てます。
+`aimet collect`を`--dir`なしで実行すると、VS Code公式実装と同じ優先順位でUserディレクトリを組み立てます。
 
-| OS | Userディレクトリの基点 |
-|---|---|
-| Windows | `%APPDATA%\<product>\User`（`APPDATA`がなければユーザーホームの`AppData\Roaming`） |
-| macOS | `~/Library/Application Support/<product>/User` |
-| Linux | `${XDG_CONFIG_HOME:-~/.config}/<product>/User` |
+| 優先順位 | 条件 | Userディレクトリ |
+|---:|---|---|
+| 1 | `VSCODE_PORTABLE` | `<VSCODE_PORTABLE>/user-data/User`（Portable Modeは単一製品ルート） |
+| 2 | `VSCODE_APPDATA` | `<VSCODE_APPDATA>/<product>/User` |
+| 3 | Windows | `%APPDATA%\<product>\User`（なければ`%USERPROFILE%\AppData\Roaming`） |
+| 3 | macOS | `~/Library/Application Support/<product>/User` |
+| 3 | Linux | `${XDG_CONFIG_HOME:-~/.config}/<product>/User` |
 
-`<product>`は`Code`、`Code - Insiders`、`VSCodium`の3種類です。それぞれについて次の2ルートを**両方**、再帰的に探索します。
+`VSCODE_PORTABLE`と`VSCODE_APPDATA`が両方ある場合はPortable Modeを優先します。相対パスはVS Codeと同様に`VSCODE_CWD`（なければaimetのカレントディレクトリ）から解決します。これらの環境変数は`aimet collect`プロセスから見える必要があります。
+
+`<product>`は`Code`、`Code - Insiders`、`VSCodium`の3種類です（Portable Modeを除く）。それぞれについて次の2ルートを**両方**、再帰的に探索します。
 
 ```text
 User/workspaceStorage
@@ -84,7 +112,7 @@ User/globalStorage/github.copilot-chat
 
 このため、従来版と現行版のログが同じPCに残っていても、利用者がVS Codeのバージョンを指定する必要はありません。アクセスできない、または存在しないディレクトリは読み飛ばします。
 
-非標準のuser-data-dirを使う場合は、`AIMET_COPILOT_DIR`で探索ルートを**追加**できます。複数指定も可能です。
+VS Codeを`--user-data-dir <dir>`で起動した場合、その起動引数は別プロセスのaimetから取得できません。`AIMET_COPILOT_DIR=<dir>/User`で探索ルートを**追加**するか、収集時に`--dir <dir>/User`を指定してください。`AIMET_COPILOT_DIR`は複数指定も可能です。
 
 ```powershell
 # Windows: セミコロン区切り
@@ -99,6 +127,8 @@ aimet collect --tool copilot
 ```
 
 `--dir <path>`を指定した場合は、その実行に限って自動探索ルートを置き換え、指定ディレクトリだけを探索します。調査用にログを隔離したフォルダや、E2Eで採取したログだけを読みたい場合に使用します。
+
+参照: [VS Code公式ソースのuser-data-path解決](https://github.com/microsoft/vscode/blob/main/src/vs/platform/environment/node/userDataPath.ts)、[VS Code CLIの`--user-data-dir`](https://code.visualstudio.com/docs/configure/command-line#_advanced-cli-options)、[Portable Mode](https://code.visualstudio.com/docs/setup/portable)
 
 #### 同じセッションを二重計上しない仕組み
 
@@ -238,7 +268,9 @@ VS CodeとCopilot拡張は自動更新されるため、将来の再検証では
 
 **`test/paths.test.js` — macOS / Windows互換性**
 
-- `%APPDATA%`、Windowsのフォールバック、Stable / Insiders / VSCodium、新旧の `workspaceStorage` / `globalStorage`、`AIMET_COPILOT_DIR`の `;` 区切り、Windows `file://` URIを検証します。
+- `VSCODE_PORTABLE` / `VSCODE_APPDATA` / `%APPDATA%` / `XDG_CONFIG_HOME`の優先順位、Windowsのフォールバック、Stable / Insiders / VSCodium、新旧の `workspaceStorage` / `globalStorage`、`AIMET_COPILOT_DIR`の `;` 区切り、Windows `file://` URIを検証します。
+- Portable Modeの変更先に置いたCopilot JSONLを`--dir`なしで収集し、DBへ取り込めることと、`aimet init copilot`が同じUserディレクトリへプロンプトを配置することを検証します。
+- `CLAUDE_CONFIG_DIR` / `CODEX_HOME`の既定値と上書きをmacOS / Linux / Windows形式で検証し、変更先の実JSONLを`--dir`なしで収集できること、`aimet init`が同じルートを使うことを確認します。
 - `session-store.db`のセッションID完全一致、構造化されたログ中のパスだけを使う安全な補完、自由記述の除外、より高信頼なプロジェクト根拠へのメタデータ限定更新を検証します。
 - CIのWindowsジョブでは、`--dir` なしの自動探索から取り込みまで実行します。
 
@@ -279,8 +311,8 @@ aimet detail --tool claude --md detail.md
 `aimet init <tool>` が各開発環境にフックを組み込みます（`--dry-run` で書き込み内容を事前確認できます）。
 
 ```bash
-aimet init claude    # ~/.claude/settings.json に SessionEnd フックを登録
-aimet init codex     # ~/.codex/hooks.json にフックを登録
+aimet init claude    # Claude保存ルートのsettings.jsonにSessionEndフックを登録
+aimet init codex     # Codex保存ルートのhooks.jsonにフックを登録
 aimet init copilot   # ~/.copilot/hooks/aimet.json に Stop フックを登録（VS Code）
 ```
 
@@ -300,8 +332,8 @@ aimet init copilot   # ~/.copilot/hooks/aimet.json に Stop フックを登録�
 
 | 環境 | 配置先 | 呼び出し方 |
 |---|---|---|
-| Claude Code | `~/.claude/commands/metrics.md` | `/metrics` |
-| Codex CLI | `~/.codex/prompts/metrics.md` | `/metrics` |
+| Claude Code | `<Claude保存ルート>/commands/metrics.md` | `/metrics` |
+| Codex CLI | `<Codex保存ルート>/prompts/metrics.md` | `/metrics` |
 | Copilot (VS Code) | `<userData>/User/prompts/metrics.prompt.md` | チャットで `/metrics`（プロンプトファイル） |
 
 Copilotの場合、エージェントモードでターミナルコマンドの実行許可を求められたら承認してください（`aimet collect` と `aimet session` を実行します）。
@@ -415,8 +447,8 @@ aimet init <claude|codex|copilot> [--dry-run]
 
 | 対象 | 書き込み先 |
 |---|---|
-| `claude` | `~/.claude/settings.json`（SessionEndフック）、`~/.claude/commands/metrics.md` |
-| `codex` | `~/.codex/hooks.json`（SessionEndフック）、`~/.codex/prompts/metrics.md` |
+| `claude` | `CLAUDE_CONFIG_DIR`配下（未設定時は`~/.claude`）の`settings.json`、`commands/metrics.md` |
+| `codex` | `CODEX_HOME`配下（未設定時は`~/.codex`）の`hooks.json`、`prompts/metrics.md` |
 | `copilot` | `~/.copilot/hooks/aimet.json`（Stopフック）、`<userData>/User/prompts/metrics.prompt.md` |
 
 > **copilot-cli について**: 専用の `init` はありません。`~/.copilot/hooks/` は**VS CodeとCopilot CLIの両方が読む**ため、`aimet init copilot` で登録したStopフックがCLIセッション終了時にも発火し、フックのフォールバックスキャンは `copilot` と `copilot-cli` の両方を取り込みます。
@@ -432,6 +464,12 @@ aimet init <claude|codex|copilot> [--dry-run]
 | 変数 | 説明 |
 |---|---|
 | `AIMET_DB` | データベースファイルのパス（デフォルト: `~/.aimet/metrics.db`） |
+| `CLAUDE_CONFIG_DIR` | Claude Codeの設定・セッション保存ルート。aimetの収集と`init claude`も尊重（未設定時: `~/.claude`） |
+| `CODEX_HOME` | Codexの設定・セッション保存ルート。aimetの収集と`init codex`も尊重（未設定時: `~/.codex`） |
+| `VSCODE_PORTABLE` | VS Code Portable Modeのルート。Copilotの`<value>/user-data/User`を自動探索 |
+| `VSCODE_APPDATA` | VS Code全体のユーザーデータ基点。`VSCODE_PORTABLE`未設定時にCopilot探索へ反映 |
+| `APPDATA` / `XDG_CONFIG_HOME` | Windows / LinuxのVS Code標準ユーザーデータ基点。上記2変数の未設定時に使用 |
+| `AIMET_COPILOT_DIR` | Copilotの追加探索ルート。Windowsは`;`、macOS / Linuxは`:`区切り。`--user-data-dir`使用時の明示指定に利用 |
 
 ## 3種類のレポートの見方
 

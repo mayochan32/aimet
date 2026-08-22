@@ -1,10 +1,12 @@
-import { basename } from 'node:path';
+import { basename, join } from 'node:path';
 import type { Parser, SessionMetrics, TokenUsage } from '../types.js';
 import { costUsd } from '../pricing.js';
+import { codexHome } from '../paths.js';
 import { jsonlRecords, activeSeconds, durationSeconds } from './util.js';
 
 /**
- * Codex CLI rollout logs: ~/.codex/sessions/**&#47;rollout-<ts>-<uuid>.jsonl
+ * Codex CLI rollout logs:
+ * ${CODEX_HOME:-~/.codex}/sessions/**&#47;rollout-<ts>-<uuid>.jsonl
  * token_count events carry CUMULATIVE totals (info.total_token_usage),
  * so we keep the maximum observed rather than summing.
  * Note: input_tokens INCLUDES cached_input_tokens; we split them apart
@@ -14,7 +16,7 @@ export const codexParser: Parser = {
   tool: 'codex',
 
   defaultDirs() {
-    return ['.codex/sessions'];
+    return [join(codexHome(), 'sessions')];
   },
 
   isLogFile(path: string) {

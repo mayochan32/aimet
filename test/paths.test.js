@@ -5,7 +5,12 @@ import { platform, tmpdir } from 'node:os';
 import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
-import { copilotWorkspaceRoots, vscodeUserDirs } from '../dist/paths.js';
+import {
+  claudeConfigDir,
+  codexHome,
+  copilotWorkspaceRoots,
+  vscodeUserDirs,
+} from '../dist/paths.js';
 import {
   collectKnownWorkspaceReferences,
   copilotParser,
@@ -24,6 +29,142 @@ test('Windows paths prefer APPDATA and include Stable, Insiders and VSCodium', (
     'D:\\Roaming\\Code - Insiders\\User',
     'D:\\Roaming\\VSCodium\\User',
   ]);
+});
+
+test('VS Code user-data roots honor portable and app-data overrides in official precedence', () => {
+  assert.deepEqual(
+    vscodeUserDirs({
+      VSCODE_PORTABLE: 'D:\\Portable\\data',
+      VSCODE_APPDATA: 'E:\\VSCode AppData',
+      APPDATA: 'F:\\Roaming',
+    }, 'win32', 'C:\\Users\\tester', 'C:\\work'),
+    ['D:\\Portable\\data\\user-data\\User']
+  );
+  assert.deepEqual(
+    vscodeUserDirs({
+      VSCODE_APPDATA: 'E:\\VSCode AppData',
+      APPDATA: 'F:\\Roaming',
+    }, 'win32', 'C:\\Users\\tester', 'C:\\work'),
+    [
+      'E:\\VSCode AppData\\Code\\User',
+      'E:\\VSCode AppData\\Code - Insiders\\User',
+      'E:\\VSCode AppData\\VSCodium\\User',
+    ]
+  );
+  assert.deepEqual(
+    copilotWorkspaceRoots(
+      { VSCODE_PORTABLE: 'portable-data' },
+      'linux',
+      '/home/tester',
+      '/opt/vscode'
+    ),
+    [
+      '/opt/vscode/portable-data/user-data/User/workspaceStorage',
+      '/opt/vscode/portable-data/user-data/User/globalStorage/github.copilot-chat',
+    ]
+  );
+});
+
+test('collect discovers Copilot logs from VSCODE_PORTABLE without --dir', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'aimet-vscode-portable-'));
+  const portable = join(base, 'data');
+  const chatDir = join(portable, 'user-data', 'User', 'workspaceStorage', 'hash', 'chatSessions');
+  mkdirSync(chatDir, { recursive: true });
+  writeFileSync(
+    join(chatDir, 'portable-session.jsonl'),
+    '{"kind":0,"v":{"sessionId":"portable-session","creationDate":1783000000000,"requests":[{"timestamp":1783000001000,"promptTokens":10,"completionTokens":2,"copilotCredits":0.1}]}}\n'
+  );
+
+  const oldPortable = process.env.VSCODE_PORTABLE;
+  const oldAppData = process.env.VSCODE_APPDATA;
+  const oldExplicit = process.env.AIMET_COPILOT_DIR;
+  process.env.VSCODE_PORTABLE = portable;
+  delete process.env.VSCODE_APPDATA;
+  delete process.env.AIMET_COPILOT_DIR;
+  const store = new Store(join(base, 'metrics.db'));
+  try {
+    const result = await collect({ store, tools: ['copilot'], quiet: true });
+    assert.equal(result.inserted, 1);
+    assert.equal(store.query('SELECT session_id FROM sessions')[0].session_id, 'portable-session');
+    const { initCopilot } = await import('../dist/init.js');
+    assert.ok(
+      initCopilot(true).includes(join(portable, 'user-data', 'User', 'prompts', 'metrics.prompt.md'))
+    );
+  } finally {
+    store.close();
+    if (oldPortable === undefined) delete process.env.VSCODE_PORTABLE;
+    else process.env.VSCODE_PORTABLE = oldPortable;
+    if (oldAppData === undefined) delete process.env.VSCODE_APPDATA;
+    else process.env.VSCODE_APPDATA = oldAppData;
+    if (oldExplicit === undefined) delete process.env.AIMET_COPILOT_DIR;
+    else process.env.AIMET_COPILOT_DIR = oldExplicit;
+  }
+});
+
+test('Claude and Codex state roots honor official environment variables on every OS', () => {
+  assert.equal(
+    claudeConfigDir({}, 'darwin', '/Users/tester', '/work'),
+    '/Users/tester/.claude'
+  );
+  assert.equal(
+    claudeConfigDir({ CLAUDE_CONFIG_DIR: '/Volumes/ai/claude' }, 'darwin', '/Users/tester', '/work'),
+    '/Volumes/ai/claude'
+  );
+  assert.equal(
+    codexHome({}, 'win32', 'C:\\Users\\tester', 'D:\\work'),
+    'C:\\Users\\tester\\.codex'
+  );
+  assert.equal(
+    codexHome({ CODEX_HOME: 'D:\\Agent Data\\codex' }, 'win32', 'C:\\Users\\tester', 'C:\\work'),
+    'D:\\Agent Data\\codex'
+  );
+  assert.equal(
+    codexHome({ CODEX_HOME: 'relative-codex' }, 'linux', '/home/tester', '/srv/app'),
+    '/srv/app/relative-codex'
+  );
+});
+
+test('collect discovers Claude and Codex logs from configured state roots', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'aimet-configured-roots-'));
+  const claudeRoot = join(base, 'claude state');
+  const claudeLogs = join(claudeRoot, 'projects', 'project-a');
+  const codexRoot = join(base, 'codex state');
+  const codexLogs = join(codexRoot, 'sessions', '2026', '08', '22');
+  mkdirSync(claudeLogs, { recursive: true });
+  mkdirSync(codexLogs, { recursive: true });
+  copyFileSync(
+    join(import.meta.dirname, 'fixtures', 'claude-basic.jsonl'),
+    join(claudeLogs, 'claude-configured.jsonl')
+  );
+  copyFileSync(
+    join(import.meta.dirname, 'fixtures', 'codex-basic.jsonl'),
+    join(codexLogs, 'rollout-configured.jsonl')
+  );
+
+  const oldClaude = process.env.CLAUDE_CONFIG_DIR;
+  const oldCodex = process.env.CODEX_HOME;
+  process.env.CLAUDE_CONFIG_DIR = claudeRoot;
+  process.env.CODEX_HOME = codexRoot;
+  const store = new Store(join(base, 'metrics.db'));
+  try {
+    const result = await collect({ store, tools: ['claude', 'codex'], quiet: true });
+    assert.equal(result.scanned, 2);
+    assert.equal(result.inserted, 2);
+    assert.deepEqual(
+      store.query('SELECT tool FROM sessions ORDER BY tool').map((row) => row.tool),
+      ['claude', 'codex']
+    );
+
+    const { initClaude, initCodex } = await import('../dist/init.js');
+    assert.ok(initClaude(true).includes(join(claudeRoot, 'settings.json')));
+    assert.ok(initCodex(true).includes(join(codexRoot, 'hooks.json')));
+  } finally {
+    store.close();
+    if (oldClaude === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = oldClaude;
+    if (oldCodex === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = oldCodex;
+  }
 });
 
 test('Copilot roots include legacy workspaceStorage and current globalStorage', () => {

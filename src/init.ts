@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, copyFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import { vscodeUserDirs } from './paths.js';
+import { claudeConfigDir, codexHome, vscodeUserDirs } from './paths.js';
 
 const HOOK_CMD = (tool: string) => `aimet hook ${tool}`;
 
@@ -44,7 +44,8 @@ function writeFile(path: string, content: string, dryRun: boolean, log: string[]
 /** Register the SessionEnd hook + /metrics command for Claude Code. */
 export function initClaude(dryRun: boolean): string {
   const log: string[] = [];
-  const settingsPath = join(homedir(), '.claude', 'settings.json');
+  const configDir = claudeConfigDir();
+  const settingsPath = join(configDir, 'settings.json');
   const settings = existsSync(settingsPath) ? readJson(settingsPath) : {};
   const hooks = (settings.hooks ??= {}) as Record<string, unknown[]>;
   const entry = { hooks: [{ type: 'command', command: HOOK_CMD('claude') }] };
@@ -57,7 +58,7 @@ export function initClaude(dryRun: boolean): string {
   }
 
   writeFile(
-    join(homedir(), '.claude', 'commands', 'metrics.md'),
+    join(configDir, 'commands', 'metrics.md'),
     [
       '---',
       'description: Show AI usage metrics for the current session',
@@ -78,7 +79,8 @@ export function initClaude(dryRun: boolean): string {
 /** Register hooks.json + /metrics custom prompt for Codex CLI. */
 export function initCodex(dryRun: boolean): string {
   const log: string[] = [];
-  const hooksPath = join(homedir(), '.codex', 'hooks.json');
+  const configDir = codexHome();
+  const hooksPath = join(configDir, 'hooks.json');
   const cfg = existsSync(hooksPath) ? readJson(hooksPath) : {};
   const hooks = (cfg.hooks ??= {}) as Record<string, unknown[]>;
   const list = (hooks.SessionEnd ??= []) as unknown[];
@@ -91,7 +93,7 @@ export function initCodex(dryRun: boolean): string {
   }
 
   writeFile(
-    join(homedir(), '.codex', 'prompts', 'metrics.md'),
+    join(configDir, 'prompts', 'metrics.md'),
     [
       'Show my AI usage metrics.',
       '',
