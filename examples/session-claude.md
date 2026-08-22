@@ -1,27 +1,18 @@
-# Session parent-session
+# Session 7dbc8ba3-8dd9-4e11-a0b7-69ffa0feae22
 
 | item | value |
 | --- | --- |
 | tool | claude |
-| project | /proj/claude |
+| project | /Users/hal |
 | model | claude-sonnet-4-6 |
-| started | 2026-08-23 00:00:00 (+00:00) |
-| ended | 2026-08-23 00:00:01 (+00:00) |
-| active / wall | 0.00h / 0.00h |
-| turns | 1 |
-| input tokens | 100 |
-| output tokens | 10 |
-| cache read | 50 |
-| cache write | 5 |
+| started | 2026-06-19 18:21:03 (+09:00) |
+| ended | 2026-06-19 18:54:04 (+09:00) |
+| active / wall | 0.26h / 0.55h |
+| turns | 13 |
+| input tokens | 29 |
+| output tokens | 3,921 |
+| cache read | 292,816 |
+| cache write | 17,350 |
 | reasoning | - |
-| cost | $0.0005 (API-equivalent) |
-| log file | <fixtures>/claude/parent-session.jsonl |
-
-## Subagents
-
-| session | model | turns | in | out | cacheR | active | cost($) |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| parent-session/agent-alpha | claude-sonnet-4-6 | 1 | 11 | 7 | 3 | 0.00h | 0.0001 |
-| parent-session/agent-beta | claude-sonnet-4-6 | 1 | 13 | 9 | 4 | 0.00h | 0.0002 |
-
-**TOTAL (parent + subagents)**: in 124 / out 26 / cacheR 57 / $0.0008 (API-equivalent)
+| cost | $0.2508 (API-equivalent) |
+| log file | <log-dir>/7dbc8ba3-8dd9-4e11-a0b7-69ffa0feae22.jsonl |

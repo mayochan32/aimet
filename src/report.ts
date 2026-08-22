@@ -114,11 +114,11 @@ export function reportRows(store: Store, opts: ReportOpts = {}): Record<string, 
        SUM(turns) AS turns,
        SUM(duration_sec) AS duration_sec,
        SUM(active_sec) AS active_sec,
-       CASE WHEN COUNT(input_tokens) = COUNT(*) THEN SUM(input_tokens) END AS input,
-       CASE WHEN COUNT(output_tokens) = COUNT(*) THEN SUM(output_tokens) END AS output,
-       CASE WHEN COUNT(cache_read_tokens) = COUNT(*) THEN SUM(cache_read_tokens) END AS cache_read,
-       CASE WHEN COUNT(cache_write_tokens) = COUNT(*) THEN SUM(cache_write_tokens) END AS cache_write,
-       CASE WHEN COUNT(cost_usd) = COUNT(*) THEN SUM(cost_usd) END AS cost_usd,
+       SUM(input_tokens) AS input,
+       SUM(output_tokens) AS output,
+       SUM(cache_read_tokens) AS cache_read,
+       SUM(cache_write_tokens) AS cache_write,
+       SUM(cost_usd) AS cost_usd,
        MAX(estimated) AS estimated
      FROM sessions AS s ${where}
      GROUP BY period${group}
@@ -150,7 +150,7 @@ export function report(store: Store, opts: ReportOpts = {}): string {
   const widths = header.map((h, i) => Math.max(h.length, ...lines.map((l) => l[i].length)));
   const fmt = (cols: string[]) => cols.map((c, i) => c.padStart(widths[i])).join('  ');
   return [fmt(header), fmt(widths.map((w) => '-'.repeat(w))), ...lines.map(fmt)].join('\n') +
-    '\n\n( * = includes estimated values | cost semantics vary by tool; see README )' +
+    '\n\n( * = includes estimated values | cost: claude/codex = API-equivalent USD, copilot = actual credit spend )' +
     '\nコストは参考値。実際の実行環境に合わせて計算してください。';
 }
 
@@ -205,11 +205,8 @@ export function childrenRollup(
   sessionId: unknown
 ): Record<string, unknown> | null {
   const rows = store.query(
-    `SELECT COUNT(*) AS n,
-            CASE WHEN COUNT(input_tokens) = COUNT(*) THEN SUM(input_tokens) END AS input,
-            CASE WHEN COUNT(output_tokens) = COUNT(*) THEN SUM(output_tokens) END AS output,
-            CASE WHEN COUNT(cache_read_tokens) = COUNT(*) THEN SUM(cache_read_tokens) END AS cache_read,
-            CASE WHEN COUNT(cost_usd) = COUNT(*) THEN SUM(cost_usd) END AS cost_usd,
+    `SELECT COUNT(*) AS n, SUM(input_tokens) AS input, SUM(output_tokens) AS output,
+            SUM(cache_read_tokens) AS cache_read, SUM(cost_usd) AS cost_usd,
             SUM(turns) AS turns
      FROM sessions WHERE parent_session_id = ?`,
     sessionId
@@ -256,10 +253,8 @@ export function rollupSessionRows(
   ];
   for (const field of fields) {
     const known = rows.filter((r) => r[field] != null);
-    total[field] = known.length === rows.length
-      ? known.reduce((sum, r) => sum + num(r[field]), 0)
-      : null;
-    if (known.length < rows.length) partial.push(field);
+    total[field] = known.length === 0 ? null : known.reduce((sum, r) => sum + num(r[field]), 0);
+    if (known.length > 0 && known.length < rows.length) partial.push(field);
   }
   const sources = new Set(rows.map((r) => String(r.cost_source ?? (num(r.estimated) ? 'estimated' : 'actual'))));
   total.cost_source = sources.size === 1 ? [...sources][0] : 'mixed';
@@ -291,12 +286,9 @@ export function sessionSummary(store: Store, opts: { tool?: string; id?: string 
             `cacheR ${tok(k.cache_read_tokens)} / ` +
             `${k.cost_usd == null ? 'cost n/a' : '$' + num(k.cost_usd).toFixed(4) + costLabel(k)}`
         ),
-        `subagents total: turns ${kids.turns} / in ${tok(kids.input)} / out ${tok(kids.output)} / cacheR ${tok(kids.cache_read)} / ` +
-          (kids.cost_usd == null
-            ? 'cost n/a'
-            : `cost +$${num(kids.cost_usd).toFixed(4)}${costLabel(kidCostMeta)}`) +
+        `subagents total: turns ${kids.turns} / in ${tok(kids.input)} / out ${tok(kids.output)} / cacheR ${tok(kids.cache_read)} / cost +$${num(kids.cost_usd).toFixed(4)}${costLabel(kidCostMeta)}` +
           (kidRows.some((k) => k.cost_usd == null)
-            ? ` ※${kidRows.filter((k) => k.cost_usd == null).length}件のコストが取得不可のため合計もn/a`
+            ? ` ※${kidRows.filter((k) => k.cost_usd == null).length}件は単価不明(n/a)で合算に含まれず`
             : ''),
         rootTotalLine(r, total, kidRows.length),
       ]

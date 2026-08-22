@@ -36,16 +36,6 @@ export function codexHome(
   return configuredHome(env.CODEX_HOME, '.codex', os, home, cwd);
 }
 
-/** GitHub Copilot CLI state root. COPILOT_HOME overrides ~/.copilot. */
-export function copilotHome(
-  env: Env = process.env,
-  os: NodeJS.Platform = platform(),
-  home: string = homedir(),
-  cwd: string = process.cwd()
-): string {
-  return configuredHome(env.COPILOT_HOME, '.copilot', os, home, cwd);
-}
-
 /** VS Code user-data directories for the current platform. */
 export function vscodeUserDirs(
   env: Env = process.env,

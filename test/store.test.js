@@ -384,44 +384,6 @@ test('tree-scoped parent prevents descendant double counting', () => {
   store.close();
 });
 
-test('partial token or cost data never appears as a complete aggregate', () => {
-  const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-')), 'm.db');
-  const store = new Store(db);
-  store.upsert(sampleMetrics({
-    tool: 'copilot', sessionId: 'partial-parent', costUsd: 0.01,
-    tokens: { input: 100, output: 10, cacheRead: 20, cacheWrite: null, reasoning: null },
-    metricScope: 'own', costSource: 'actual',
-  }));
-  store.upsert(sampleMetrics({
-    tool: 'copilot', sessionId: 'partial-child', parentSessionId: 'partial-parent', costUsd: null,
-    tokens: { input: null, output: 20, cacheRead: null, cacheWrite: null, reasoning: null },
-    metricScope: 'own', costSource: 'estimated',
-  }));
-
-  const report = reportRows(store)[0];
-  assert.equal(report.input, null);
-  assert.equal(report.output, 30);
-  assert.equal(report.cost_usd, null);
-  const root = store.query('SELECT * FROM sessions WHERE session_id = ?', 'partial-parent')[0];
-  const kids = store.query('SELECT * FROM sessions WHERE parent_session_id = ?', 'partial-parent');
-  const total = rollupSessionRows(root, kids);
-  assert.equal(total.input_tokens, null);
-  assert.equal(total.output_tokens, 30);
-  assert.equal(total.cost_usd, null);
-  assert.deepEqual(total.partial_fields.sort(), [
-    'cache_read_tokens',
-    'cache_write_tokens',
-    'cost_usd',
-    'input_tokens',
-    'reasoning_tokens',
-  ]);
-  const summary = sessionSummary(store, { tool: 'copilot', id: 'partial-parent' });
-  assert.match(summary, /subagents total:.*cost n\/a/);
-  assert.match(summary, /TOTAL\(parent \+ 1 subagents\):.*cost n\/a/);
-  assert.doesNotMatch(summary, /subagents total:.*\+\$0\.0000/);
-  store.close();
-});
-
 test('sanitized real Copilot golden session preserves parent, four children and exact AIC', async () => {
   const parent = await copilotParser.parseFile(
     join(import.meta.dirname, 'fixtures', 'real', 'copilot-golden-parent.jsonl')

@@ -1,10 +1,9 @@
 import { jsonlRecords } from './parsers/util.js';
-import { copilotSubagentParser } from './parsers/copilotsubagent.js';
 
 /**
- * Structured detail extracted from a single session log. The default output
- * deliberately omits large or sensitive raw fields; --raw attaches original
- * records to the selected request/event entries where supported.
+ * Full-detail dump of a single session log.
+ * Emits everything the JSONL records, organized but unfiltered:
+ * raw usage objects, rate limits, CLI versions, event type counts, etc.
  */
 
 export async function detailClaude(path: string, raw = false): Promise<Record<string, unknown>> {
@@ -204,9 +203,8 @@ export async function detail(
   if (tool === 'claude') return detailClaude(path, raw);
   if (tool === 'codex') return detailCodex(path, raw);
   if (tool === 'copilot') {
-    // Current debug logs (main plus any child kind) use the span-trace format,
-    // not the legacy chatSessions format. The predicate is separator-neutral.
-    return copilotSubagentParser.isLogFile(path)
+    // Subagent logs use the span-trace format, not the chatSessions format.
+    return /(^|\/)runSubagent-[^/]*\.jsonl$/.test(path)
       ? detailCopilotSpan(path, raw)
       : detailCopilot(path, raw);
   }

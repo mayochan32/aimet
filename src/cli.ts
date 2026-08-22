@@ -17,9 +17,9 @@ Usage:
   aimet session [--tool <tool>] [--id <prefix>] [--md <file>]
   aimet detail  [--tool <tool>] [--id <prefix>] [--file <log.jsonl>]
               [--raw] [--md <file>]
-              (structured session detail; --file requires --tool;
-               --raw attaches sensitive original records where supported;
-               --md writes a readable Markdown file)
+              (full JSON dump of everything the session log records;
+               --raw also includes base_instructions / dynamic_tools /
+               original records; --md writes a readable Markdown file)
   aimet hook <tool>              (called by editor hooks; reads JSON on stdin)
   aimet init <tool> [--dry-run]  (install hooks & commands into the tool)
 
@@ -62,7 +62,7 @@ async function main(): Promise<void> {
     { collect, ingestFile },
     { report, reportRows, sessionSummary, sessionRow, childrenRows, parseTimeArg },
     { reportMd, sessionMd, detailMd },
-    { parserFor, parserForFile },
+    { parserFor },
     { initTool },
     { detail },
   ] = await Promise.all([
@@ -154,12 +154,6 @@ async function main(): Promise<void> {
     case 'detail': {
       let tool = values.tool ?? '';
       let file = values.file ?? '';
-      if (file && !tool) {
-        throw new Error('aimet detail: --file requires --tool');
-      }
-      if (tool && !parserFor(tool)) {
-        throw new Error(`aimet detail: unknown tool "${tool}"`);
-      }
       if (!file) {
         // Resolve the latest matching session from the DB.
         const store = new Store();
@@ -216,20 +210,11 @@ async function main(): Promise<void> {
         if (raw.trim()) {
           try {
             const evt = JSON.parse(raw) as Record<string, unknown>;
-            const p = [
-              evt.agent_transcript_path,
-              evt.transcript_path,
-              evt.rollout_path,
-              evt.session_file,
-              evt.log_path,
-            ]
+            const p = [evt.transcript_path, evt.rollout_path, evt.session_file, evt.log_path]
               .find((v): v is string => typeof v === 'string' && existsSync(v));
             // Handled only if the file actually parsed into a session
             // (VS Code may pass a transcript in a different format).
-            if (p) {
-              const exactParser = parserForFile(tool, p) ?? parser;
-              handled = (await ingestFile(store, exactParser, p)) != null;
-            }
+            if (p) handled = (await ingestFile(store, parser, p)) != null;
           } catch {
             /* non-JSON stdin: fall through */
           }
@@ -258,7 +243,5 @@ async function main(): Promise<void> {
 
 main().catch((err) => {
   console.error(`aimet: ${err}`);
-  // Editor/agent lifecycle hooks are advisory. Never break the host tool even
-  // when the local DB or a log is temporarily unavailable.
-  process.exit(process.argv[2] === 'hook' ? 0 : 1);
+  process.exit(1);
 });

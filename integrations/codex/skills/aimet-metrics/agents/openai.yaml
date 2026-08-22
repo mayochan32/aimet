@@ -1,4 +1,0 @@
-interface:
-  display_name: "aimet Metrics"
-  short_description: "Collect and show local Codex usage metrics"
-  default_prompt: "Use $aimet-metrics to collect and show the latest Codex metrics."

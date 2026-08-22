@@ -8,7 +8,6 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   claudeConfigDir,
   codexHome,
-  copilotHome,
   copilotWorkspaceRoots,
   vscodeUserDirs,
 } from '../dist/paths.js';
@@ -118,21 +117,6 @@ test('Claude and Codex state roots honor official environment variables on every
   assert.equal(
     codexHome({ CODEX_HOME: 'relative-codex' }, 'linux', '/home/tester', '/srv/app'),
     '/srv/app/relative-codex'
-  );
-});
-
-test('Copilot CLI state root honors COPILOT_HOME on every OS', () => {
-  assert.equal(
-    copilotHome({}, 'darwin', '/Users/tester', '/work'),
-    '/Users/tester/.copilot'
-  );
-  assert.equal(
-    copilotHome({ COPILOT_HOME: 'D:\\Agent Data\\copilot' }, 'win32', 'C:\\Users\\tester', 'C:\\work'),
-    'D:\\Agent Data\\copilot'
-  );
-  assert.equal(
-    copilotHome({ COPILOT_HOME: 'relative-copilot' }, 'linux', '/home/tester', '/srv/app'),
-    '/srv/app/relative-copilot'
   );
 });
 

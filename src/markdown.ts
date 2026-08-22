@@ -1,4 +1,4 @@
-import { fmtTokens, fmtHours, costLabel, noCostLabel, rollupSessionRows, tok } from './report.js';
+import { fmtTokens, fmtHours, costLabel, rollupSessionRows, tok } from './report.js';
 
 /** Markdown renderers for the three output levels: report / session / detail. */
 
@@ -6,10 +6,9 @@ const num = (v: unknown) => Number(v ?? 0);
 const esc = (v: unknown) => String(v ?? '').replace(/\|/g, '\\|');
 
 /** ISO timestamp -> local time "YYYY-MM-DD HH:mm:ss (+09:00)" (machine TZ). */
-export function fmtLocal(iso: unknown, utc = false): string {
+export function fmtLocal(iso: unknown): string {
   const d = new Date(String(iso ?? ''));
   if (Number.isNaN(d.getTime())) return String(iso ?? '');
-  if (utc) return `${d.toISOString().slice(0, 19).replace('T', ' ')} (+00:00)`;
   const ymdhms = d.toLocaleString('sv-SE'); // YYYY-MM-DD HH:mm:ss
   const off = -d.getTimezoneOffset();
   const sign = off >= 0 ? '+' : '-';
@@ -38,15 +37,15 @@ function kvTable(obj: Record<string, unknown>): string {
 
 export function reportMd(
   rows: Record<string, unknown>[],
-  opts: { period?: string; by?: string; generatedAt?: string; utc?: boolean }
+  opts: { period?: string; by?: string }
 ): string {
   const by = opts.by;
   const header = ['period', 'start', 'end', ...(by ? [by] : []), 'sessions', 'turns',
     'active', 'wall', 'input', 'output', 'cacheR', 'cacheW', 'cost($)'];
   const body = rows.map((r) => [
     String(r.period),
-    fmtLocal(r.first_start, opts.utc),
-    fmtLocal(r.last_end, opts.utc),
+    fmtLocal(r.first_start),
+    fmtLocal(r.last_end),
     ...(by ? [String(r[by])] : []),
     String(r.sessions),
     String(r.turns),
@@ -61,21 +60,20 @@ export function reportMd(
   return [
     `# AI Metrics Report (${opts.period ?? 'daily'}${by ? `, by ${by}` : ''})`,
     '',
-    `Generated: ${opts.generatedAt ?? new Date().toISOString()}`,
+    `Generated: ${new Date().toISOString()}`,
     '',
     table(header, body),
     '',
     '- active: 実働時間（5分超のアイドルを除外） / wall: 実時間',
     '- start / end: 期間内の最初のセッション開始・最後のセッション終了（ローカル時刻）',
-    '- cost: ツールごとに意味が異なる（`*` は推定値を含む）。詳細はREADME参照',
+    '- cost: API換算USD（`*` は推定値を含む）',
     '',
   ].join('\n');
 }
 
 export function sessionMd(
   r: Record<string, unknown>,
-  children: Record<string, unknown>[] = [],
-  utc = false
+  children: Record<string, unknown>[] = []
 ): string {
   const total = rollupSessionRows(r, children);
   const childSection = children.length
@@ -113,8 +111,8 @@ export function sessionMd(
         ...(r.parent_session_id ? [['parent session', String(r.parent_session_id)] as [string, string]] : []),
         ['project', String(r.project)],
         ['model', String(r.model)],
-        ['started', fmtLocal(r.started_at, utc)],
-        ['ended', fmtLocal(r.ended_at, utc)],
+        ['started', fmtLocal(r.started_at)],
+        ['ended', fmtLocal(r.ended_at)],
         ['active / wall', `${fmtHours(num(r.active_sec))} / ${fmtHours(num(r.duration_sec))}`],
         ['turns', String(r.turns)],
         ['input tokens', r.input_tokens == null ? '-' : num(r.input_tokens).toLocaleString()],
@@ -122,7 +120,7 @@ export function sessionMd(
         ['cache read', r.cache_read_tokens == null ? '-' : num(r.cache_read_tokens).toLocaleString()],
         ['cache write', r.cache_write_tokens == null ? '-' : num(r.cache_write_tokens).toLocaleString()],
         ['reasoning', r.reasoning_tokens == null ? '-' : num(r.reasoning_tokens).toLocaleString()],
-        ['cost', r.cost_usd == null ? noCostLabel(r) : '$' + num(r.cost_usd).toFixed(4) + costLabel(r)],
+        ['cost', r.cost_usd == null ? 'unknown model' : '$' + num(r.cost_usd).toFixed(4) + costLabel(r)],
         ['log file', String(r.log_path)],
       ]
     ),
@@ -131,7 +129,7 @@ export function sessionMd(
   ].join('\n');
 }
 
-export function detailMd(d: Record<string, unknown>, utc = false): string {
+export function detailMd(d: Record<string, unknown>): string {
   const out: string[] = [`# Session Detail (${d.tool})`, '', `Log: \`${d.logPath}\``, ''];
 
   out.push('## Meta', '', kvTable((d.meta ?? {}) as Record<string, unknown>), '');
@@ -174,12 +172,12 @@ export function detailMd(d: Record<string, unknown>, utc = false): string {
 
   if (d.tool === 'copilot' && d.format === 'span') {
     const reqs = d.requests as Record<string, unknown>[];
-    out.push('## LLM requests (agent debug span trace)', '');
+    out.push('## LLM requests (subagent span trace)', '');
     out.push(
       table(
         ['timestamp', 'model', 'debugName', 'in', 'cached', 'out', 'ttft', 'dur'],
         reqs.map((q) => [
-          fmtLocal(String(q.timestamp), utc),
+          fmtLocal(String(q.timestamp)),
           String(q.model ?? ''),
           String(q.debugName ?? ''),
           String(q.inputTokens ?? '-'),
@@ -198,7 +196,7 @@ export function detailMd(d: Record<string, unknown>, utc = false): string {
       table(
         ['timestamp', 'model', 'prompt', 'in', 'out', 'credits', 'elapsed', 'tool rounds'],
         reqs.map((q) => [
-          fmtLocal(new Date(Number(q.timestamp)).toISOString(), utc),
+          fmtLocal(new Date(Number(q.timestamp)).toISOString()),
           String(q.resolvedModel ?? q.modelId ?? ''),
           String(q.message ?? '').slice(0, 40),
           String(q.promptTokens ?? '-'),
