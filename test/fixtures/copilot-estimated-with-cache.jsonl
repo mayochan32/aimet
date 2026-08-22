@@ -1,0 +1,6 @@
+{"kind":0,"v":{"sessionId":"sess-cop-estimated-cache","creationDate":1786000000000,"requests":[]}}
+{"kind":1,"k":["requests",0,"timestamp"],"v":1786000001000}
+{"kind":1,"k":["requests",0,"promptTokens"],"v":20000}
+{"kind":1,"k":["requests",0,"completionTokens"],"v":500}
+{"kind":1,"k":["requests",0,"promptTokenDetails"],"v":[{"category":"CacheRead","label":"Cached context","percentageOfPrompt":95}]}
+{"kind":2,"k":["requests",0,"result","metadata","resolvedModel"],"v":"claude-sonnet-4.6"}

@@ -111,6 +111,17 @@ test('copilot: Push appends requests instead of replacing completed requests', a
   assert.equal(m.metricScope, 'own');
 });
 
+test('copilot: estimated cost bills cached context at the cache-read rate', async () => {
+  const m = await copilotParser.parseFile(fx('copilot-estimated-with-cache.jsonl'));
+  assert.ok(m);
+  assert.equal(m.estimated, true, 'no Copilot credits -> API-equivalent estimate');
+  assert.equal(m.tokens.input, 1000, '5% of promptTokens is uncached input');
+  assert.equal(m.tokens.cacheRead, 19000, '95% of promptTokens is cached input');
+  assert.equal(m.tokens.output, 500);
+  // claude-sonnet-4 pricing: input $3/M, output $15/M, cache read $0.3/M.
+  assert.equal(m.costUsd, 0.0162);
+});
+
 test('copilot: Delete removes an ObjectMutationLog request', async () => {
   const { writeFileSync, mkdtempSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
