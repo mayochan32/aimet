@@ -8,8 +8,8 @@ Log: `<log-dir>/<session-uuid>/events.jsonl`
 | --- | --- |
 | sessionId | 0866c855-2158-4207-a591-6eb4d7969e64 |
 | copilotVersion | 1.0.68 |
-| cwd | /Users/hal/dev/temp/aimet |
-| repository | mayochan32/aimet |
+| cwd | /workspace/example-project |
+| repository | example/agent-project |
 | branch | master |
 
 ## Models

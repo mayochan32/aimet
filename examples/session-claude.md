@@ -3,7 +3,7 @@
 | item | value |
 | --- | --- |
 | tool | claude |
-| project | /Users/hal |
+| project | /workspace/example-project |
 | model | claude-sonnet-4-6 |
 | started | 2026-06-19 18:21:03 (+09:00) |
 | ended | 2026-06-19 18:54:04 (+09:00) |

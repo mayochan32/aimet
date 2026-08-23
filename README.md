@@ -17,7 +17,7 @@
 | Codex（CLI / IDE拡張 / ChatGPTデスクトップアプリのローカルCodex） | `<Codex保存ルート>/sessions/**/rollout-*.jsonl`（既定: `~/.codex`） | 実測（in / cached / out / reasoning）＋レート制限時系列 | ✅ |
 | GitHub Copilot (VS Code Chat) | `workspaceStorage/<hash>/chatSessions/*.jsonl` + `workspaceStorage`（旧）または `globalStorage`（現行）の `debug-logs/<uuid>/main.jsonl` | 実測（in / cached / out）＋消費AI Credits | ✅ |
 | GitHub Copilot サブエージェント | `workspaceStorage/<hash>/GitHub.copilot-chat`（旧）または `globalStorage/github.copilot-chat`（現行）の `debug-logs/<親uuid>/*Subagent-*.jsonl` | 実測（in / cached / out / AI Credits、リクエスト単位） | ✅ |
-| GitHub Copilot CLI | `~/.copilot/session-state/<uuid>/events.jsonl` | 実測（**出力トークンのみ**） | ✅ |
+| GitHub Copilot CLI | `<Copilot CLI保存ルート>/session-state/<uuid>/events.jsonl`（既定: `~/.copilot`） | 実測（**出力トークンのみ**） | ✅ |
 
 ### Claude Code / Codexログの保存仕様と自動探索
 
@@ -69,6 +69,18 @@ OpenAIの公式仕様では、`CODEX_HOME`はCLI・IDE拡張・app-serverが使�
 
 `config.toml`の`log_dir`は運用・診断ログの保存先であり、セッショントランスクリプトの`sessions/`を移す設定ではありません。`log_dir`を変えても、aimetのrollout探索先は変わりません。
 
+##### Codexの終了フックとaimet Skill
+
+`aimet init codex`は、`<CODEX_HOME>/hooks.json`に親用の`SessionEnd`と子用の`SubagentStop`を登録します。Codex公式仕様では`SessionEnd`はメインスレッドにだけ発火し、子の終了は`SubagentStop`で通知されます。後者が渡す`agent_transcript_path`を優先的に取り込むことで、親だけでなく子のrolloutも終了時に収集します。`SessionEnd`は公式の上限である3秒に設定し、aimet側の失敗はCodexの終了処理を失敗させないようexit 0と有効なJSON出力で終了します。
+
+対話からの呼び出しは、現行Codexの公式拡張形式であるSkillを使います。`$HOME/.agents/skills/aimet-metrics/`に`SKILL.md`と`agents/openai.yaml`を配置し、`$aimet-metrics`で明示的に呼び出せます。Skillのユーザー配置先は`CODEX_HOME`ではなく`$HOME/.agents/skills`である点に注意してください。旧版aimetが作成した`<CODEX_HOME>/prompts/metrics.md`が既にある場合は、利用者のファイルを勝手に削除せずそのまま残し、新規には作成しません。
+
+公式仕様・実装の参照先：
+
+- [OpenAI: Codex Hooks（イベント、JSON構造、`SessionEnd`の3秒上限、`agent_transcript_path`）](https://learn.chatgpt.com/docs/hooks)
+- [OpenAI: Codex Skills（`SKILL.md`、`$HOME/.agents/skills`、`agents/openai.yaml`）](https://learn.chatgpt.com/docs/build-skills)
+- [OpenAI: Codex Subagents（子は独自のモデル・ツール作業を行い、トークンを消費）](https://learn.chatgpt.com/docs/agent-configuration/subagents)
+
 #### Claude Codeの親・サブエージェント識別と集計
 
 Anthropicの公式仕様では、親会話の`sessionId`と、個々のサブエージェントの`agentId`は別の識別子です。ディスク上では次の階層になります。
@@ -92,6 +104,8 @@ aimetは以下の規則で取り込みます。
 - 同じAPIメッセージが再送・ストリーミングで複数行に現れても、`message.id`で重複排除します。サブエージェントを再開して同じファイルに追記された場合も、再収集でDB行を更新し、行数を増やしません。
 - 子ログに`cwd`がない場合は、`subagents`と親IDの2階層をさかのぼった`<project-key>`からprojectをベストエフォートで復元します。`project-key`のハイフンが元パスの区切りか文字かは完全に逆変換できないため、正確性はログ内の`cwd`を優先します。
 
+`aimet init claude`は、親用の`SessionEnd`だけでなく子用の`SubagentStop`も`settings.json`の公式の入れ子フック形式で登録します。`SubagentStop`が渡す`agent_transcript_path`を読むため、フック経由でも親と子のパスを取り違えません。フックにパスがない、またはファイルがまだ読めない場合は、Claude保存ルートの直近2日をフォールバック探索します。
+
 親が子の最終結果を次の入力として読む場合、子の出力トークンと親の後続入力トークンの両方が計上されます。これらは別々のAPI利用で課金されるため、二重計上ではありません。二重計上となるのは、同じトランスクリプトまたは同じAPIメッセージを2回足した場合であり、上記のIDと重複排除で防ぎます。
 
 > [!IMPORTANT]
@@ -108,7 +122,7 @@ aimetは以下の規則で取り込みます。
 - [Claude Code: Where transcripts are stored](https://code.claude.com/docs/en/sessions#where-transcripts-are-stored)
 - [Claude Code: Application dataとWindowsの保存ルート](https://code.claude.com/docs/en/claude-directory#application-data)
 - [Claude Code: サブエージェントのトランスクリプト](https://code.claude.com/docs/en/sub-agents)
-- [OpenAI: Codexの`CODEX_HOME`仕様](https://developers.openai.com/codex/environment-variables)
+- [OpenAI: Codexの`CODEX_HOME`仕様](https://learn.chatgpt.com/docs/config-file/environment-variables)
 - [OpenAI: ChatGPTデスクトップアプリ（ChatGPTとCodexの選択）](https://learn.chatgpt.com/docs/app)
 - [OpenAI: Codex App Server（リッチクライアントの共通基盤）](https://learn.chatgpt.com/docs/app-server)
 - [OpenAI: Codex設定リファレンス（`log_dir`）](https://learn.chatgpt.com/docs/config-file/config-reference)
@@ -118,6 +132,16 @@ aimetは以下の規則で取り込みます。
 > Copilot Chat（VS Code）のスナップショットは `User/workspaceStorage/`、デバッグログは従来版では同じ `workspaceStorage` 配下、現行版では `User/globalStorage/github.copilot-chat/` にあります。aimetはStable / Insiders / VSCodiumの新旧両方に加え、`VSCODE_PORTABLE`、`VSCODE_APPDATA`、Windowsの`APPDATA`、Linuxの`XDG_CONFIG_HOME`を自動探索に反映します。それ以外の非標準パスは `--dir` または `AIMET_COPILOT_DIR`（Windowsは `;`区切り、macOS/Linuxは `:`区切り）で指定できます。記録されるのは**Chat/エージェントモードの対話のみ**です。
 >
 > **Copilot CLI（`@github/copilot`）の注意**: レポート上は `copilot`（Chat版）と区別するため **`copilot-cli`** という別ツールとして集計します。CLIのログは**出力トークンしか記録しない**（入力・キャッシュのフィールドが存在しない）ため、`in` / `cacheR` / `cacheW` は **`-`（null）**、コストも **`-`（null）** になります。取得できるのは出力トークン・実行時間・ターン数・モデル・プロジェクトです。
+
+### Copilot CLIログの保存先と`COPILOT_HOME`
+
+Copilot CLIはセッションイベントを`<Copilot CLI保存ルート>/session-state/<session-id>/events.jsonl`に保存します。保存ルートは`COPILOT_HOME`が設定されていればその値、なければ`~/.copilot`です。aimetの`collect --tool copilot-cli`と`init copilot`も同じ解決規則を使います。相対パスの`COPILOT_HOME`はaimetのカレントディレクトリから絶対パス化します。
+
+`~/.copilot/hooks/` はVS Code側のユーザーフック保存先でもあるため、`aimet init copilot`は標準位置の`~/.copilot/hooks/aimet.json`を必ず設定します。`COPILOT_HOME`が別ディレクトリを指す場合は、Copilot CLIも取りこぼさないよう`<COPILOT_HOME>/hooks/aimet.json`にも同じ`Stop`と`SubagentStop`フックを配置します。フックファイルには公式スキーマの`"version": 1`を付けます。
+
+参照: [GitHub Copilot CLIの設定ディレクトリ](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference)、[GitHub Copilot Hooksリファレンス](https://docs.github.com/en/copilot/reference/hooks-reference)
+
+Copilotの`Stop`（互換名。CLI形式では`agentStop`）は親エージェントの1ターン完了時、`SubagentStop`は対応する子の正常完了時に発火します。公式仕様上、組み込みの`general-purpose`エージェントだけは`SubagentStop`を発火しません。その場合も親の`Stop`でaimetが直近ログを探索し、親が参照する子デバッグJSONLをまとめて取り込むため、親のターン完了後には回収できます。これは子の終了直後ではなく親の完了時に反映されるというタイミング差であり、親子の加算規則は変わりません。
 
 ### Copilot Chatログの探索と集計
 
@@ -232,7 +256,7 @@ main.jsonl / 親がchild_session_refで参照する子JSONL（詳細なスパン
 }
 ```
 
-従来版で`github.copilot.chat.agentDebugLog.enabled`も設定画面に表示される場合は、互換性のため両方を有効にします。現行版では旧設定は非推奨で、`fileLogging.enabled`へ統合されています。詳細は[Microsoft公式Copilot設定定義](https://github.com/microsoft/vscode/blob/main/extensions/copilot/package.nls.json)を参照してください。
+従来版で`github.copilot.chat.agentDebugLog.enabled`も設定画面に表示される場合は、互換性のため両方を有効にします。現行版では旧設定は非推奨で、`fileLogging.enabled`へ統合されています。詳細は[VS Code公式AI設定一覧](https://code.visualstudio.com/docs/agents/reference/ai-settings)、[Chat Debug viewの公式トラブルシューティング](https://code.visualstudio.com/docs/agents/agent-troubleshooting/chat-debug-view)、[Microsoft公式Copilot設定定義](https://github.com/microsoft/vscode/blob/main/extensions/copilot/package.nls.json)を参照してください。
 
 デバッグログが生成されない場合、Chatスナップショットから取得できる範囲は集計できますが、親内部の全LLM呼び出しやサブエージェントの正確なトークン・AI Creditsは復元できません。
 
@@ -257,7 +281,7 @@ main.jsonl / 親がchild_session_refで参照する子JSONL（詳細なスパン
 
 同じ親IDについて`chatSessions`と`main.jsonl`の両方がある場合、トークンとAI Creditsは引き続き`main.jsonl`だけを採用します。`chatSessions`から引き継ぐのは不足しているプロジェクト情報だけであり、数値を足したり`main.jsonl`を置き換えたりしません。DBには内部的に`project_source`も保存し、`unknown`、親継承、構造化参照、`workspace.json`、`session-store.db`の順で根拠を評価します。再収集時により確実な根拠が見つかれば、イベント時刻が同じでもプロジェクト情報だけを更新し、トークンとAI Creditsは変更しません。子が親より先に走査された場合も、親の取り込み後に`unknown`または親継承の子を補完します。
 
-それでも、VS Codeでフォルダーを開かずに作成した空ウィンドウのセッションなど、Copilot自身が`cwd`を記録せず登録済みworkspaceとの対応もない場合は`project = unknown`が正しい結果です。今回のWindows E2Eで使う`code chat -n`も空ウィンドウを明示するため、このケースに該当します。これはinput／cacheRead／output／AI Creditsや親子集計の正確性には影響しませんが、`aimet report --by project`では`unknown`へまとめられます。
+それでも、VS Codeでフォルダーを開かずに作成した空ウィンドウのセッションなど、Copilot自身が`cwd`を記録せず登録済みworkspaceとの対応もない場合は`project = unknown`が正しい結果です。Windows E2Eスクリプトで使う`code chat -n`も空ウィンドウを明示するため、このケースに該当します。これはinput／cacheRead／output／AI Creditsや親子集計の正確性には影響しませんが、`aimet report --by project`では`unknown`へまとめられます。
 
 この実装が参照する仕様・実装情報は次のとおりです。
 
@@ -301,31 +325,16 @@ npm test
 npm run test:e2e:copilot-windows
 ```
 
-詳細な準備、成功判定、失敗時の確認方法は [Windows実機Copilot E2E手順](docs/windows-copilot-e2e.md) を参照してください。今回の実測値、判明した問題、修正内容、二重計上の検証結果は [Windows Copilot E2E検証・修正レポート](docs/windows-copilot-validation-report.md) にまとめています。
+スクリプトは一時ディレクトリに専用のVS Codeユーザーデータを作り、デバッグロギングを有効化してシングル／マルチエージェントを実行します。作成された`main.jsonl`と参照された子JSONLを独立検算器が直接合計し、aimetのDBとトークン数・AI Credits・親子関係を照合します。実行時はVS CodeとCopilotのサインイン、対象ワークスペース、テスト用プロンプトの入力が必要です。
 
-#### 今回のWindows実機検証環境
-
-以下は、このブランチのCopilotログ探索・親子集計・プロジェクト特定を実測した環境です。最低動作要件ではなく、再現時に比較するためのスナップショットです。確認日は**2026-08-22（日本時間）**です。
-
-| 項目 | 検証値 | ローカルでの確認元 | 公式情報 |
-|---|---|---|---|
-| OS | Windows 11 Pro 25H2、x64、OS build `26200.8973` | Windows `CurrentVersion`レジストリの`DisplayVersion`、`CurrentBuildNumber`、`UBR`。旧互換の`ProductName`は`Windows 10 Pro`と表示されるためbuild番号で判定 | [Microsoft: Windows 11 release information](https://learn.microsoft.com/en-us/windows/release-health/windows11-release-information) |
-| VS Code | Visual Studio Code Stable `1.134.0`、x64、commit `110a328ea54b42367b803ec53ee0bf52ef26b419` | `code --version`およびインストール済み`product.json`の`quality = stable` | [VS Code 1.134 release notes](https://code.visualstudio.com/updates/v1_134)、[VS Code CLI](https://code.visualstudio.com/docs/configure/command-line) |
-| GitHub Copilot拡張 | 同梱版 `0.62.0` build `1`、VS Code engine `^1.134.0` | VS Codeインストール配下の`resources/app/extensions/copilot/package.json` | [Microsoft公式ソース: Copilot package.json](https://github.com/microsoft/vscode/blob/main/extensions/copilot/package.json) |
-| Node.js | `v24.11.1`、x64 | `node --version` | [Node.js 24.11.1 release](https://nodejs.org/en/blog/release/v24.11.1) |
-| npm | `11.6.2` | `npm --version` | [npm CLI v11 documentation](https://docs.npmjs.com/cli/v11/commands/npm/) |
-| Windows PowerShell | `5.1.26100.8972` | `$PSVersionTable.PSVersion` | [Microsoft: Windows PowerShell 5.1](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_windows_powershell_5.1?view=powershell-5.1) |
-| Git for Windows | `2.46.0.windows.1` | `git --version` | [Git for Windows公式サイト](https://gitforwindows.org/) |
-| aimet | branch `codex/copilot-accounting-fix`、検証開始HEAD `5cfa0c5` | `git branch --show-current`、`git rev-parse --short HEAD` | [mayochan32/aimet](https://github.com/mayochan32/aimet) |
-
-VS CodeとCopilot拡張は自動更新されるため、将来の再検証では上表のコマンドを再実行し、新しい値とログ形式の差を記録してください。特に`globalStorage`、`session-store.db`、デバッグ設定名はバージョン依存として扱います。
-
-同じく2026-08-22に、macOS 26.6.2（arm64）のVS Code Stable `1.134.0`／同梱Copilot `0.62.0` build `1`が作成した現行`globalStorage`ログでも再検証しました。シングル親1件、マルチ親1件、`searchSubagent-*`の子2件を独立検算器と照合し、非キャッシュ入力`33,257`、cacheR `44,837`、出力`1,125`、合計`0.8570538 AI Credits`が一致しました。同じログの再収集は`+0 new, ~0 updated, 4 unchanged`で、子の見落とし・二重計上とも発生していません。
+このE2Eと以下のfixtureテストは**リポジトリをcloneした開発環境向け**です。npm配布パッケージは実行時コード、README、利用例、Codex Skillだけを含み、`test/`は含めません。配布パッケージを展開した場所でこのnpm scriptを実行するのではなく、上記のclone手順で取得したリポジトリから実行してください。
 
 **`test/cli.test.js` — CLIバージョンとヘルプ**
 
 - `aimet --version`が実行中の配布パッケージの`package.json`と同じバージョンを出力し、終了コード0になることを検証します。
 - `aimet --help`がバージョン確認コマンドを含むUsageを表示し、終了コード0になることを検証します。
+- `detail --file`で形式を決める`--tool`を必須とし、Copilotの子パスにChat用パーサを誤適用しないことを検証します。
+- Codex/Claude系の`agent_transcript_path`とCopilot互換形式の`transcript_path`のどちらからでも子JSONLを取り込み、パスに一致するCopilot子パーサを選べること、DBエラーを含むフック失敗時もホスト向けの終了コードが0で、Codex向けは有効なJSONを返すことを検証します。
 
 **`test/parsers.test.js` — 各ツールパーサの正しさ**
 
@@ -343,20 +352,23 @@ VS CodeとCopilot拡張は自動更新されるため、将来の再検証では
 - `upsert` が `inserted → skipped → updated` と正しく遷移し、**同じログを何度取り込んでも行が増えない**こと（`last_event_at` による重複防止）。
 - `collect` を同じログに再実行すると、2回目は**すべてskip**されること。
 - Copilotの `own`（自分のみ）と `tree`（子を含む）の両形式で、report / session / Markdownが同じ二重計上防止規則を使うこと。
+- 親子の一部でトークンまたはコストが`null`の場合、既知分だけを完全な合計に見せず、report / session / Markdownすべてで集計値も`null`にすること。
 
 **`test/paths.test.js` — macOS / Windows互換性**
 
 - `VSCODE_PORTABLE` / `VSCODE_APPDATA` / `%APPDATA%` / `XDG_CONFIG_HOME`の優先順位、Windowsのフォールバック、Stable / Insiders / VSCodium、新旧の `workspaceStorage` / `globalStorage`、`AIMET_COPILOT_DIR`の `;` 区切り、Windows `file://` URIを検証します。
 - Portable Modeの変更先に置いたCopilot JSONLと、`CLAUDE_CONFIG_DIR` / `CODEX_HOME`の変更先に置いた実JSONLを`--dir`なしで収集し、DBへ取り込めることを検証します。
-- `CLAUDE_CONFIG_DIR` / `CODEX_HOME`の既定値と上書きをmacOS / Linux / Windows形式で検証します。
+- `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `COPILOT_HOME`の既定値と上書きをmacOS / Linux / Windows形式で検証します。
 - `session-store.db`のセッションID完全一致、構造化されたログ中のパスだけを使う安全な補完、自由記述の除外、より高信頼なプロジェクト根拠へのメタデータ限定更新を検証します。
 - CIのWindowsジョブでは、`--dir` なしの自動探索から取り込みまで実行します。
 
-**`test/init.test.js` — フックとプロンプトの安全な初期化**
+**`test/init.test.js` — フックと対話コマンド／Skillの安全な初期化**
 
 - Claude / Codex / Copilotそれぞれで、未作成の明示ルートをdry-runに表示しつつ、ファイルやディレクトリを作成しないことを検証します。
-- 通常実行で既存設定を保持し、`.bak`を作り、必要なフックとプロンプトを配置し、再実行してもフックが重複しないことを検証します。
+- 通常実行で既存設定を保持し、`.bak`を作り、親・子の両フックとClaude/Copilotのプロンプト、CodexのSkillを配置し、再実行してもフックが重複しないことを検証します。
 - 別コマンドの部分文字列や間違ったフック構造を「登録済み」と誤判定せず、`type: command`とコマンドの完全一致で判定することを検証します。
+- `COPILOT_HOME`が標準位置と異なるときは両方に`version: 1`付きの`Stop` / `SubagentStop`を1件ずつ配置し、Codexの旧`prompts/metrics.md`は削除・上書きしないことを検証します。
+- `hooks`やイベント配列が不正な型の場合は、利用者設定を上書きせず停止することを検証します。
 - 3ツールとも既存設定が不正なJSONなら上書きせず停止することを検証します。
 
 **`test/security.test.js` — レビュー指摘の再発防止**
@@ -364,6 +376,12 @@ VS CodeとCopilot拡張は自動更新されるため、将来の再検証では
 - **プロトタイプ汚染**: `__proto__` / `constructor` を含む細工Copilotログを読んでも `Object.prototype` が汚染されないこと。正当なデータは正しく復元されること。
 - **SQLホワイトリスト**: `report` の `--by` / `--period` に想定外の値（例: `tool; DROP TABLE ...`）を渡すと、SQLを組み立てる前に例外で弾くこと。
 - **pricing.json検証**: ユーザー単価表の不正エントリ（型不正・危険キー）は読み飛ばし、正当な上書きだけ採用すること。
+
+**`test/examples.test.js` — 配布サンプルの品質**
+
+- `examples/`の9種類（report、3ツールのsession、Claude/Codex/Copilot Chat/Copilotスパン/Copilot CLIのdetail）が欠けていないことを検証します。
+- 個人ホームパスが残っていないこと、コストのツール別意味、デバッグスパンの現行見出し、不明な子コストを含む合計の`n/a`表示がサンプルに反映されていることを検証します。
+- READMEからリンクする各サンプルが実在することを検証します。`examples/`はnpm配布パッケージにも含めます。
 
 ## 機能と使い方
 
@@ -378,9 +396,9 @@ aimet report --period weekly --by project
 aimet report --tool claude          # 特定ツールに絞り込み
 aimet report --by model --json      # JSON出力（BI・スプレッドシート連携用）
 aimet session --tool claude         # 直近セッションのサマリ
-aimet detail --tool codex           # 直近セッションの全記録をJSONダンプ
-aimet detail --tool codex --raw     # 除外なし完全ダンプ（システムプロンプト全文等も）
-aimet detail --file <log.jsonl>     # DB未登録のログを直接ダンプ
+aimet detail --tool codex           # 直近セッションの構造化された詳細をJSON出力
+aimet detail --tool codex --raw     # 対応する元レコード・巨大フィールドも追加
+aimet detail --tool claude --file <log.jsonl>  # DB未登録のログを直接ダンプ
 ```
 
 すべての出力レベルは `--md <ファイル>` でMarkdownファイルに整形出力できます。
@@ -391,19 +409,19 @@ aimet session --tool codex --md session.md
 aimet detail --tool claude --md detail.md
 ```
 
-### 2. 自動発動 — セッション終了時に自動記録
+### 2. 自動発動 — セッション終了時／エージェントのターン完了時に自動記録
 
 `aimet init <tool>` が各開発環境にフックを組み込みます（`--dry-run` で書き込み内容を事前確認できます）。
 
 ```bash
-aimet init claude    # Claude保存ルートのsettings.jsonにSessionEndフックを登録
-aimet init codex     # Codex保存ルートのhooks.jsonにフックを登録
-aimet init copilot   # ~/.copilot/hooks/aimet.json に Stop フックを登録（VS Code）
+aimet init claude    # settings.jsonにSessionEnd / SubagentStopを登録
+aimet init codex     # hooks.jsonにSessionEnd / SubagentStop、ユーザー領域にSkillを配置
+aimet init copilot   # aimet.jsonにStop / SubagentStopを登録（VS Code / Copilot CLI）
 ```
 
-以後、セッションが終わるたびに `aimet hook <tool>` が自動で呼ばれ、そのセッションのログを即時パースしてDBへ記録します。フックはstdinのイベントJSON（`transcript_path` 等）からログを特定し、特定できない場合は直近2日分の差分スキャンにフォールバックします。**ホスト環境を絶対に失敗させないよう常に exit 0** で終了します。
+以後、Claude/Codexでは親セッションまたはサブエージェントの終了時、Copilotでは親のターン完了時または対応するサブエージェントの終了時に`aimet hook <tool>`が呼ばれ、そのログをパースしてDBへ記録します。フックはstdinのイベントJSON（`agent_transcript_path`、`transcript_path`、`rollout_path`等）から実在するログを特定し、同じツールに複数のJSONL形式がある場合はファイルパスに一致するパーサを選びます。特定またはパースできない場合は直近2日分の差分スキャンにフォールバックします。**ホスト環境を失敗させないよう常にexit 0**で終了します。同じセッションへ複数回発火しても、DBの主キーと更新判定により二重計上しません。
 
-> **注意（Codex）**: `hooks.json` のスキーマはバージョンにより変わる可能性があります。組み込み後にTUIの `/hooks` で有効になっているか確認してください。
+> **注意（Codex）**: `aimet init codex`は現行公式スキーマの入れ子構造でフックを登録します。組み込み後は`/hooks`で登録状態、`/skills`または`$aimet-metrics`でSkillの認識を確認できます。Codexを再起動してもSkillが見えない場合は、`$HOME/.agents/skills/aimet-metrics/SKILL.md`の存在と、起動したユーザーのホームを確認してください。
 
 > **注意（Copilot / VS Code）**: VS CodeのAgent hooksは**プレビュー機能**です（フック形式はClaude Code互換で、ユーザーレベルの置き場所が `~/.copilot/hooks/*.json`）。組み込み後、Copilot Chatで `/hooks` と打つか、出力パネルの「GitHub Copilot Chat Hooks」チャンネルで発火を確認してください。フックが使えない環境では、定期実行で代替できます：
 > ```bash
@@ -413,12 +431,12 @@ aimet init copilot   # ~/.copilot/hooks/aimet.json に Stop フックを登録�
 
 ### 3. 対話発動 — エージェントに聞く
 
-`aimet init` は各環境に `/metrics` コマンドも配置します。開発中に `/metrics` と打つと、エージェントが `aimet session` を実行して現在の使用状況を答えます。
+`aimet init`は、Claude CodeとCopilotにプロンプトファイル、CodexにSkillを配置します。開発中に呼び出すと、エージェントが`aimet session`等を実行して使用状況を答えます。
 
 | 環境 | 配置先 | 呼び出し方 |
 |---|---|---|
 | Claude Code | `<Claude保存ルート>/commands/metrics.md` | `/metrics` |
-| Codex CLI | `<Codex保存ルート>/prompts/metrics.md` | `/metrics` |
+| Codex（デスクトップアプリ / CLI / IDE拡張） | `$HOME/.agents/skills/aimet-metrics/` | `$aimet-metrics`（CLI / IDEでは`/skills`からも確認） |
 | Copilot (VS Code) | `<userData>/User/prompts/metrics.prompt.md` | チャットで `/metrics`（プロンプトファイル） |
 
 Copilotの場合、エージェントモードでターミナルコマンドの実行許可を求められたら承認してください（`aimet collect` と `aimet session` を実行します）。
@@ -437,7 +455,7 @@ aimet <command> [options]
 
 ```console
 $ aimet --version
-1.0.0
+2.0.0
 ```
 
 実行中のaimetと同じ配布パッケージの`package.json`からバージョンを表示します。複数PCや複数ユーザーで調査する場合は、不具合報告にこの出力を含めてください。
@@ -501,20 +519,20 @@ aimet session [--tool <tool>] [--id <prefix>] [--md <file>]
 
 ---
 
-### aimet detail — 全記録の詳細ダンプ
+### aimet detail — セッションログの構造化詳細
 
 ```
 aimet detail [--tool <tool>] [--id <prefix>] [--file <log.jsonl>]
              [--raw] [--md <file>]
 ```
 
-集計せず、セッションログに記録された情報を（ほぼ）すべてJSONで出力する。対象セッションはDBから解決する（`--file` 指定時はDB不要）。
+セッションログから、メタデータ、モデル一覧、イベント件数、リクエスト別usage、ツール固有の時系列を集計とは別の調査用JSONとして出力する。対象セッションはDBから解決する（`--file`指定時はDB不要）。ログの全フィールド・全行を無加工で複製するコマンドではない。
 
 | オプション | 説明 |
 |---|---|
 | `--tool <tool>` / `--id <prefix>` | 対象セッションの指定（省略時は最新） |
 | `--file <log.jsonl>` | ログファイルを直接指定する。DB未登録のファイルも可（`--tool` で形式を指定） |
-| `--raw` | 通常除外している巨大フィールドも含めた完全ダンプ（Codexの `base_instructions`・`dynamic_tools`、Claudeの元レコード全体） |
+| `--raw` | 通常除外する巨大フィールドや、対応する元レコードを構造化詳細に追加（Codexの`base_instructions`・`dynamic_tools`、Claude/Copilotの元レコード等） |
 | `--md <file>` | 整形したMarkdownとしてファイルに書き出す |
 
 > **⚠️ 機密情報の注意**: `detail`（特に `--raw`）の出力には、プロジェクトパス・作業時刻・会話の断片・ツール設定・システムプロンプトが含まれ得ます。**GitHub Issue・Slack・社外のAIサービス等に貼る前に必ず中身を確認**してください。`--raw` 実行時はこの旨の警告をstderrに表示します。
@@ -527,7 +545,7 @@ aimet detail [--tool <tool>] [--id <prefix>] [--file <log.jsonl>]
 aimet hook <tool>
 ```
 
-各開発環境のフックから呼ばれる想定のコマンド（`aimet init` が登録する）。stdinのイベントJSONから `transcript_path` 等を読み取り、該当セッションだけを即時取り込む。特定できない場合は該当ツールの直近2日分を差分スキャンする。**ホスト環境を失敗させないため常に exit 0** で終了する。手動実行も可能（引数のstdinなしで差分スキャンとして動く）。
+各開発環境のフックから呼ばれる想定のコマンド（`aimet init`が登録する）。stdinのイベントJSONから`agent_transcript_path`、`transcript_path`、`rollout_path`、`session_file`、`log_path`の順に実在パスを探し、該当セッションだけを即時取り込む。特定できない場合は該当ツールの直近2日分を差分スキャンする。CopilotフックのフォールバックはVS Code ChatとCopilot CLIの両方を探す。**ホスト環境を失敗させないため常にexit 0**で終了し、Codexには成功応答として空のJSONオブジェクトも返す。手動実行も可能（stdinなしで差分スキャンとして動く）。
 
 ---
 
@@ -537,17 +555,17 @@ aimet hook <tool>
 aimet init <claude|codex|copilot> [--dry-run]
 ```
 
-指定ツールに自動発動フックと `/metrics` コマンドをインストールする。既存設定はマージし、登録済みなら重複追加しない。
+指定ツールに親・サブエージェントの自動発動フックと、対話からメトリクスを呼び出すプロンプトまたはSkillをインストールする。既存設定はマージし、登録済みなら重複追加しない。
 
 > **⚠️ 既存設定への影響**: 初回は `--dry-run` で書き込み内容を確認してから実行することを推奨します。既存の設定ファイルが不正なJSON（コメント付き等を含む）の場合、`init` は**上書きせず明示的にエラーで停止**します。実際に書き込む際は、既存ファイルを `<path>.bak` としてバックアップし、一時ファイル経由の原子的書き込み（temp→rename）で更新します。
 
 | 対象 | 書き込み先 |
 |---|---|
-| `claude` | `CLAUDE_CONFIG_DIR`配下（未設定時は`~/.claude`）の`settings.json`、`commands/metrics.md` |
-| `codex` | `CODEX_HOME`配下（未設定時は`~/.codex`）の`hooks.json`、`prompts/metrics.md` |
-| `copilot` | `~/.copilot/hooks/aimet.json`（Stopフック）、`<userData>/User/prompts/metrics.prompt.md` |
+| `claude` | `CLAUDE_CONFIG_DIR`配下（未設定時は`~/.claude`）の`settings.json`（`SessionEnd` / `SubagentStop`）、`commands/metrics.md` |
+| `codex` | `CODEX_HOME`配下（未設定時は`~/.codex`）の`hooks.json`（公式の入れ子構造で`SessionEnd` / `SubagentStop`）、`$HOME/.agents/skills/aimet-metrics/` |
+| `copilot` | `~/.copilot/hooks/aimet.json`と、別の`COPILOT_HOME`がある場合の`<COPILOT_HOME>/hooks/aimet.json`（`version: 1`、`Stop` / `SubagentStop`）、`<userData>/User/prompts/metrics.prompt.md` |
 
-> **copilot-cli について**: 専用の `init` はありません。`~/.copilot/hooks/` は**VS CodeとCopilot CLIの両方が読む**ため、`aimet init copilot` で登録したStopフックがCLIセッション終了時にも発火し、フックのフォールバックスキャンは `copilot` と `copilot-cli` の両方を取り込みます。
+> **copilot-cliについて**: 専用の`init`はありません。`aimet init copilot`はVS Codeの標準位置と、必要なら`COPILOT_HOME`の変更先の両方にフックを配置します。フックのフォールバックスキャンは`copilot`と`copilot-cli`の両方を取り込みます。
 
 | オプション | 説明 |
 |---|---|
@@ -562,6 +580,7 @@ aimet init <claude|codex|copilot> [--dry-run]
 | `AIMET_DB` | データベースファイルのパス（デフォルト: `~/.aimet/metrics.db`） |
 | `CLAUDE_CONFIG_DIR` | Claude Codeの設定・セッション保存ルート。aimetの収集と`init claude`も尊重（未設定時: `~/.claude`） |
 | `CODEX_HOME` | Codexの設定・セッション保存ルート。CLI・IDE拡張・app-serverと、aimetの収集・`init codex`が参照（未設定時: `~/.codex`）。GUIアプリとaimetで見える値が異なると収集できないため、変更時は「Codexの対応クライアントと取得範囲」を参照 |
+| `COPILOT_HOME` | GitHub Copilot CLIの状態ルート。`session-state`JSONLの収集と`init copilot`のCLI向けフック配置に使用（未設定時: `~/.copilot`）。VS Codeの標準フック位置は変更先とは別に保持 |
 | `VSCODE_PORTABLE` | VS Code Portable Modeのルート。Copilotの`<value>/user-data/User`を自動探索 |
 | `VSCODE_APPDATA` | VS Code全体のユーザーデータ基点。`VSCODE_PORTABLE`未設定時にCopilot探索へ反映 |
 | `APPDATA` / `XDG_CONFIG_HOME` | Windows / LinuxのVS Code標準ユーザーデータ基点。上記2変数の未設定時に使用 |
@@ -588,7 +607,7 @@ aimet init <claude|codex|copilot> [--dry-run]
 | output | 出力トークン（Codexはreasoning分を含む） |
 | cacheR | キャッシュ読み取りトークン（プロンプトキャッシュのヒット量） |
 | cacheW | キャッシュ書き込みトークン（Claudeのみ。OpenAIは書き込み課金なし） |
-| cost($) | **API換算コストUSD**。従量課金だった場合の金額。`*` 付きは推定値を含む |
+| cost($) | ツール別のコストUSD。Claude/CodexはAPI換算、Copilotの`actual`はAI Credits × $0.01、Copilot CLIは取得不可。`*`付きは推定値を含む |
 
 読み方のヒント: `active/wall` の比が低いほど「AIに任せて放置できた」ことを意味します。`cacheR` が大きいほどコンテキスト再利用が効いています。`cost/turns` で1タスクあたり単価が出せます。
 
@@ -600,11 +619,11 @@ aimet init <claude|codex|copilot> [--dry-run]
 |---|---|---|---|---|---|
 | claude | ✅ | ✅ | ✅ | ✅ | −（APIが個別に返さない） |
 | codex | ✅ | ✅ | ✅ | −（OpenAIは書き込み課金なし） | ✅ |
-| copilot (Chat) | ✅ | ✅ | − | − | − |
+| copilot (Chat) | ✅ | ✅ | ✅（`main.jsonl`。Chatスナップショットだけの場合は−） | − | − |
 | copilot サブエージェント | ✅ | ✅ | ✅ | − | − |
 | copilot-cli | − | ✅ | − | − | − |
 
-集計行（report）では、そのグループ内の全セッションが未計測の場合のみ `-` になります。計測可能なツールと不能なツールが混在するグループでは計測分のみの部分合計が表示される点に注意してください（`--by tool` で分ければ混在しません）。
+集計行（report）では、グループ内の1セッションでも対象項目が未計測なら、その項目の合計全体を`-`にします。既知分だけの部分合計を完全な合計のように表示しないためです。例えばCopilot CLIと他ツールを同じ行にまとめると入力とコストは`-`になります。`--by tool`で分ければ、取得可否とコストの意味が異なるツールの混在を避けられます。
 
 オプション: `--period daily|weekly|monthly`、`--by tool|project|model`（横断比較）、`--since <日数>`。
 
@@ -619,9 +638,9 @@ aimet init <claude|codex|copilot> [--dry-run]
 | reasoning | 推論トークン（Codexのみ。outputの内数） |
 | log file | 元ログファイルのパス（detailで深掘りする際の入口） |
 
-### レベル3: `aimet detail` — ログの全記録
+### レベル3: `aimet detail` — ログの構造化詳細
 
-集計せず、JSONLに記録されている情報を（ほぼ）すべて出します。構成はツールごとに異なります。
+集計合計ではなく、JSONLの既知フィールドを調査しやすい共通構造で出します。構成はツールごとに異なります。
 
 **共通**: `meta`（セッションID、作業ディレクトリ、CLIバージョン等）、`models`（使用モデル一覧）、`eventCounts`（イベント種別ごとの件数。function_call件数＝ツール実行回数など）
 
@@ -646,7 +665,13 @@ aimet init <claude|codex|copilot> [--dry-run]
 | rate_limits.primary / secondary | 5時間枠・週間枠の使用率(%)とリセット時刻 |
 | rate_limits.plan_type | 契約プラン |
 
-`--raw` を付けると、通常は除外している巨大フィールド（Codexの `base_instructions`＝システムプロンプト全文、`dynamic_tools`＝ツールスキーマ定義、Claudeの元レコード全体）も含めた完全ダンプになります。
+**GitHub Copilot Chat（Chatスナップショット）**: `requests[]`にリクエストごとの時刻、プロンプトの短い先頭、`modelId` / `resolvedModel`、入出力トークン、`copilotCredits`、経過時間、ツール呼び出しラウンド数を出します。ObjectMutationLogを復元した結果であり、同じセッションの`main.jsonl`がある場合の期間・セッション集計はより詳細な後者を優先します。
+
+**GitHub Copilotの親／子デバッグスパン**: `format: "span"`とし、`requests[]`に時刻、モデル、`debugName`、非キャッシュ入力、キャッシュ入力、出力、TTFT、処理時間、ステータスを出します。`meta.parentSessionId`により子単体のdetailから親を追跡できます。`main.jsonl`も同じスパン形式なので、見出しは「agent debug span trace」とし、子専用とは表現しません。
+
+**GitHub Copilot CLI**: `requests[]`に`assistant.message`と出力トークンを持つ関連イベントを並べ、時刻、モデル、フェーズ、出力トークン、ターンIDを出します。ログにない入力・キャッシュ・コストを推測で埋めることはしません。
+
+`--raw`を付けると、通常は除外している巨大フィールド（Codexの`base_instructions`＝システムプロンプト全文、`dynamic_tools`＝ツールスキーマ定義、Claudeの元レコード、Copilotの元リクエスト／元スパン等）も含めます。ツールのログ形式そのものが持たない情報を新たに復元するオプションではありません。
 
 ## トークン列（in / out / cacheR / cacheW）の読み方
 
@@ -680,7 +705,9 @@ Claude APIの `usage` は、1リクエストの入力トークンを**3つに分
 
 `out`（`output_tokens`）が数えるのは、その応答でモデルが**生成した全トークン**で、中身は `thinking`（推論）＋ `text`（本文）＋ `tool_use`（ツール呼び出しのJSON）を**すべて合算した1つの値**です。3種すべてが出力単価で課金されます（thinkingも例外なく出力扱い）。
 
-> **detailテーブルの注意 — `out` 列を縦に合計しないこと。** detailは1つのAI応答を content ブロックごと（thinking / text / tool_use）に複数行へ展開しますが、`in` / `out` / `cacheR` / `cacheW` は**ターン単位の同じ usage を各行にコピー表示**しているだけです。例えば `thinking` 行と `text` 行の両方に `out=59` とあるのは「思考59＋本文59」ではなく「**このターンの生成合計が59**」の意味。行ごとに足すと二重計上になります。（集計側 `report` / `session` は messageId で重複排除するため、合計値は正しく出ます。二重に見えるのは detail の生ダンプ表示のみ。）
+> **Claude detailテーブルの注意 — `out`列を縦に合計しないこと。** Claude detailは1つのAI応答をcontentブロックごと（thinking / text / tool_use）に複数行へ展開しますが、`in` / `out` / `cacheR` / `cacheW`は**ターン単位の同じusageを各行にコピー表示**しています。例えばthinking行とtext行の両方に`out=59`とあるのは「思考59＋本文59」ではなく「**このターンの生成合計が59**」の意味です。行ごとに足すと二重計上になります。集計側のreport / sessionはmessageIdで重複排除するため、合計値は正しくなります。
+>
+> **detail全般の注意**: detailは個別リクエストや累積時系列を調査する表示であり、report / sessionと別の利用量ではありません。特にCodexの`tokenTimeline`はセッション累積なので、各行を縦に合計しないでください。正式なセッション合計は`aimet session`、期間合計は`aimet report`を使います。
 
 ### `out` と `cache` をつなぐ「1ターン遅れ」の関係
 
@@ -782,7 +809,7 @@ cost = ( input × 入力単価
 
 **Codex — 課金項目はすべて実測、cacheW欠落の影響なし**。`token_count` イベントの累積値（最大値）を使用します。(1) ログの `input_tokens` は `cached_input_tokens` を**含む**ため、二重計上を避けるべく差し引いて「非キャッシュ入力」として記録します。(2) `reasoning_output_tokens` は `output_tokens` の内数で、課金も出力単価に含まれるため、コスト計算では加算しません（参考値としてreasoning列に表示）。(3) cacheWは `-`（未計測）ですが、**OpenAIにはキャッシュ書き込み課金という料金項目自体が存在しない**（自動キャッシュ・書き込み無料）ため、コスト式から欠けている項目はありません。つまり「取れない＝不正確」ではなく、課金に関係する in / cacheR / out は全部実測です。モデル名がログにない古い形式では既定単価（gpt-5-codex）にフォールバックし、`estimated` を立てます。サブエージェント（別rollout）は独立台帳なので単純合算で二重計上になりません。
 
-**Copilotクレジット（AI Credits）とは**。GitHub Copilotの課金単位で、**1クレジット = $0.01の固定レート**です。2026年6月に従来のプレミアムリクエスト（PRU）制から移行した従量課金モデルで、プランに含まれる月間クレジット枠を消費し、超過分は追加課金されます。重要なのは、**消費クレジット数はモデルや処理量によって変動する**（高価なモデルほど1リクエストあたりの消費が大きい）ため、トークン数から外部で正確に再計算することはできない、という点です。幸いVS CodeのCopilot Chatはリクエストごとの実消費（`copilotCredits`）をログに記録するので、aimetはこれをそのまま採用します — つまりCopilot Chatのcostは推定ではなく**GitHubが実際に差し引いた金額**です。キャッシュの効きやモデルの内部事情もすべて織り込み済みの値なので、キャッシュ内訳（cacheR/cacheW）がログに無くてもコストの正確性には影響しません。
+**Copilotクレジット（AI Credits）とは**。GitHub Copilotの課金単位で、**1クレジット = $0.01の固定レート**です。2026年6月に従来のプレミアムリクエスト（PRU）制から移行した従量課金モデルで、プランに含まれる月間クレジット枠を消費し、超過分は追加課金されます。重要なのは、**消費クレジット数はモデルや処理量によって変動する**（高価なモデルほど1リクエストあたりの消費が大きい）ため、トークン数から外部で正確に再計算することはできない、という点です。幸いVS CodeのCopilot Chatはリクエストごとの実消費（`copilotCredits`）をログに記録するので、aimetはこれをそのまま採用します — つまりCopilot Chatのcostは推定ではなく**GitHubが実際に差し引いた金額**です。キャッシュの効きやモデルの内部事情もすべて織り込み済みの値なので、キャッシュ内訳（cacheR/cacheW）がログに無くてもコストの正確性には影響しません。GitHub側の単位・開始時期・従量課金の説明は[組織・Enterprise向けAI Creditsの公式説明](https://docs.github.com/en/copilot/concepts/billing/usage-based-billing-for-organizations-and-enterprises)と[Copilotのモデル別課金リファレンス](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing)を参照してください。
 
 **GitHub Copilot Chat — 実測AI Credits優先、API換算はリクエスト単位のフォールバック**。`main.jsonl` の各LLMスパンにある `copilotUsageNanoAiu` / `aiu` を合計し、AI Creditsを $0.01/クレジットで表示します。`main.jsonl` がない場合は `chatSessions` の `copilotCredits` とトークンを使います。AI Creditsが欠損したリクエストだけ、実測トークン×resolvedModel単価でAPI換算し、全件実測は `actual`、一部フォールバックは `mixed`、全件フォールバックは `estimated` と区別します。
 
@@ -796,6 +823,16 @@ cost = ( input × 入力単価
 - 単価表が古いとコストがずれます。重要な集計の前に[Anthropic](https://platform.claude.com/docs/en/about-claude/pricing)・[OpenAI](https://openai.com/api/pricing/)の最新単価と `src/pricing.ts` を照合し、必要なら `~/.aimet/pricing.json` で上書きしてください。特に `gpt-5.3` / `gpt-5.4` 系の内蔵単価は近縁モデルからの推定値です
 - バッチ割引、優先スループット課金、サーバーツール（Web検索等）の従量課金は含みません
 - Codexの累積トークンはセッション途中のコンテキスト圧縮（compaction）後も引き継がれる前提です。異常に大きい値が出た場合は `aimet detail` の `tokenTimeline` で推移を確認してください
+
+#### 1セッション中にモデルを変更した場合
+
+現行のaimetスキーマは1セッションを1行で保存し、`model`も1値だけ持ちます。セッション中にモデルを変更した場合、モデルごとのトークン台帳に分割しては保存しません。そのため次の制限があります。
+
+- `aimet report --by model`は、セッション全体を最後に観測したモデルの行へ帰属させるため、モデル別の正確な配分にはなりません。
+- Claude CodeとCodexのAPI換算コストは、セッション合計トークンに1つのモデル単価を適用するため、途中で単価の異なるモデルへ変更したセッションのコストは正確ではありません。
+- Copilotの実測AI Creditsはリクエストごとの消費を合計するため金額合計自体は保てますが、`--by model`のモデル別帰属は同様に正確ではありません。モデル単価へフォールバックした推定分はリクエスト単位で計算します。
+
+監査時は`aimet detail`のClaude `requests[].model`、Codex `turnContexts[].model`、Copilot `requests[]`を確認してください。正確なモデル別集計が必要な運用では、モデルを変える前にセッションを終了し、新しいセッションを開始してください。モデル切替点ごとのトークン・コスト分割は今後の対応課題です。
 
 ## 設定
 
@@ -811,7 +848,7 @@ cost = ( input × 入力単価
 - **冪等性**: `(tool, session_id)` を主キーに、最終イベント時刻とログの情報量で更新を判定します。Copilotの同じ親IDは `main.jsonl` > `chatSessions` の固定優先順位とし、取り込み順や時刻に左右されません。
 - **Copilotの集計範囲**: スパントレース由来の親子は `own`（自分のLLM呼び出しのみ）として保存します。過去形式の親が `tree`（子を含む累計）の場合は、集計時に子を再加算しません。report / session / Markdownはすべて同じ共通ロールアップを使います。
 - **Codexのトークン**: `token_count` は累積値のため最大値を採用。`input_tokens` は `cached_input_tokens` を含むため、共通スキーマでは差し引いて「非キャッシュ入力」として記録します。
-- **Codexのマルチエージェント（CLI 0.137以降）**: サブエージェントは別のrolloutファイルになり、`session_meta` の `thread_source: "subagent"` で判別します。子の `payload.session_id` には**親のID**が入っているため、キーには `payload.id`（自スレッドID）を使い、親は `parent_session_id` にリンクします（Copilotと同じグループビューが使えます）。トークン台帳はスレッドごとに独立しており二重計上はありません。
+- **Codexのマルチエージェント**: サブエージェントは別のrolloutファイルになり、`session_meta.thread_source: "subagent"`で判別します。自スレッドのキーは`payload.id`とし、現行形式では`payload.parent_thread_id`、旧形式では自IDと異なる`payload.session_id`を親として`parent_session_id`へ保存します。この優先順位により現行・旧rolloutの両方で親子をリンクします。トークン台帳はスレッドごとに独立しているため、親1回＋子ごと1回を加算します。参照: [OpenAI公式ソースのrollout ThreadItem](https://github.com/openai/codex/blob/main/codex-rs/rollout/src/list.rs)、[OpenAI公式ソースのサブエージェント作成](https://github.com/openai/codex/blob/main/codex-rs/core/src/codex_delegate.rs)、[OpenAI: Codex Subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents)
 - **Claude Codeのサブエージェント**: 公式配置`<session-id>/subagents/agent-<agent-id>.jsonl`から親IDと子IDを取得し、子を`<parent-session-id>/agent-<agent-id>`の一意なDB行として親へリンクします。親・子とも`own`スコープなので、グループ集計は各トランスクリプトを1回だけ加算します。
 - **重複排除**: Claudeのログは同一APIメッセージが複数レコードに分かれることがあるため、messageIdで重複排除して集計します（detailはあるがまま出力）。
 - **推定値フラグ**: ログから実測できない値は `estimated` フラグ付きで区別します。
@@ -835,7 +872,8 @@ $ aimet report --by tool
 2026-07-05  copilot     1      1   0.01h   0.02h   31.3k    1.6k       -       -     0.06
 2026-06-19   claude     1     13   0.26h   0.55h      29    3.9k  292.8k   17.4k     0.25
 
-( * = includes estimated values | cost: claude/codex = API-equivalent USD, copilot = actual credit spend )
+( * = includes estimated values | Claude/Codex: API-equivalent USD | Copilot actual: AI Credits x $0.01; estimated/mixed rows may include API-equivalent estimates | Copilot CLI: cost unavailable )
+コストは参考値。実際の実行環境に合わせて計算してください。
 ```
 
 `-` は「そのツールのログに記録が存在しない」ことを示します（0とは区別されます）。
@@ -892,10 +930,10 @@ subagents (1):
   - 019f3930-4586-7013-bf2d-  codex-auto-review (subagent:guardian)  turns 6 / in 25.4k / out 867 / cacheR 85.9k / cost n/a
 ```
 
-### 全記録のダンプ（ログ解析・監査用）
+### 構造化詳細の出力（ログ解析・監査用）
 
 ```console
-$ aimet detail --tool codex                    # 最新セッションの全記録をJSONで
+$ aimet detail --tool codex                    # 最新セッションの構造化詳細をJSONで
 $ aimet detail --id call_6NQ --md detail.md    # サブエージェントをMarkdownで
 $ aimet detail --tool codex --raw | jq '.tokenTimeline[-1].rate_limits'
 {
@@ -923,7 +961,7 @@ wrote ~/.claude/commands/metrics.md
 
 - [report.md](examples/report.md) — 期間集計（`aimet report --by tool --md`）
 - [session-claude.md](examples/session-claude.md) / [session-codex.md](examples/session-codex.md) / [session-copilot.md](examples/session-copilot.md) — セッションサマリ
-- [detail-claude.md](examples/detail-claude.md) / [detail-codex.md](examples/detail-codex.md) / [detail-copilot.md](examples/detail-copilot.md) / [detail-copilot-subagent.md](examples/detail-copilot-subagent.md) / [detail-copilotcli.md](examples/detail-copilotcli.md) — 全記録の詳細ダンプ
+- [detail-claude.md](examples/detail-claude.md) / [detail-codex.md](examples/detail-codex.md) / [detail-copilot.md](examples/detail-copilot.md) / [detail-copilot-subagent.md](examples/detail-copilot-subagent.md) / [detail-copilotcli.md](examples/detail-copilotcli.md) — セッションログの構造化詳細
 
 ## ロードマップ
 

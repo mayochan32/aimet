@@ -1,4 +1,4 @@
-import { fmtTokens, fmtHours, costLabel, rollupSessionRows, tok } from './report.js';
+import { fmtTokens, fmtHours, costLabel, noCostLabel, rollupSessionRows, tok } from './report.js';
 
 /** Markdown renderers for the three output levels: report / session / detail. */
 
@@ -66,7 +66,8 @@ export function reportMd(
     '',
     '- active: 実働時間（5分超のアイドルを除外） / wall: 実時間',
     '- start / end: 期間内の最初のセッション開始・最後のセッション終了（ローカル時刻）',
-    '- cost: API換算USD（`*` は推定値を含む）',
+    '- cost: Claude/Codex はAPI換算USD。CopilotのactualはAI Credits × $0.01、推定・混在行はAPI換算推定を含む場合がある。Copilot CLIのコストは取得不可',
+    '- `*` は推定値を含む。一部でもトークン量またはコストが不明な集計値は `-` とし、既知分だけを完全な合計として表示しない',
     '',
   ].join('\n');
 }
@@ -120,7 +121,7 @@ export function sessionMd(
         ['cache read', r.cache_read_tokens == null ? '-' : num(r.cache_read_tokens).toLocaleString()],
         ['cache write', r.cache_write_tokens == null ? '-' : num(r.cache_write_tokens).toLocaleString()],
         ['reasoning', r.reasoning_tokens == null ? '-' : num(r.reasoning_tokens).toLocaleString()],
-        ['cost', r.cost_usd == null ? 'unknown model' : '$' + num(r.cost_usd).toFixed(4) + costLabel(r)],
+        ['cost', r.cost_usd == null ? noCostLabel(r) : '$' + num(r.cost_usd).toFixed(4) + costLabel(r)],
         ['log file', String(r.log_path)],
       ]
     ),
@@ -172,7 +173,7 @@ export function detailMd(d: Record<string, unknown>): string {
 
   if (d.tool === 'copilot' && d.format === 'span') {
     const reqs = d.requests as Record<string, unknown>[];
-    out.push('## LLM requests (subagent span trace)', '');
+    out.push('## LLM requests (agent debug span trace)', '');
     out.push(
       table(
         ['timestamp', 'model', 'debugName', 'in', 'cached', 'out', 'ttft', 'dur'],

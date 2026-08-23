@@ -33,12 +33,13 @@ test('init dry-run reports missing configured roots without creating them', () =
   const base = mkdtempSync(join(tmpdir(), 'aimet-init-dry-run-'));
   const claudeRoot = join(base, 'not created Claude 日本語');
   const codexRoot = join(base, 'not created Codex 日本語');
+  const codexSkills = join(base, 'not created user skills 日本語');
   const portableRoot = join(base, 'not created VS Code Portable 日本語');
   const appDataRoot = join(base, 'not created VS Code AppData 日本語');
   const home = join(base, 'not created home');
 
   const claudeOutput = initClaude(true, claudeRoot);
-  const codexOutput = initCodex(true, codexRoot);
+  const codexOutput = initCodex(true, codexRoot, codexSkills);
   const portableOutput = initCopilot(true, {
     home,
     env: { VSCODE_PORTABLE: portableRoot },
@@ -55,7 +56,10 @@ test('init dry-run reports missing configured roots without creating them', () =
   assert.ok(claudeOutput.includes(join(claudeRoot, 'settings.json')));
   assert.ok(claudeOutput.includes(join(claudeRoot, 'commands', 'metrics.md')));
   assert.ok(codexOutput.includes(join(codexRoot, 'hooks.json')));
-  assert.ok(codexOutput.includes(join(codexRoot, 'prompts', 'metrics.md')));
+  assert.ok(codexOutput.includes(join(codexSkills, 'aimet-metrics', 'SKILL.md')));
+  assert.ok(codexOutput.includes(
+    join(codexSkills, 'aimet-metrics', 'agents', 'openai.yaml')
+  ));
   assert.ok(portableOutput.includes(
     join(portableRoot, 'user-data', 'User', 'prompts', 'metrics.prompt.md')
   ));
@@ -65,7 +69,7 @@ test('init dry-run reports missing configured roots without creating them', () =
     ));
   }
 
-  for (const path of [claudeRoot, codexRoot, portableRoot, appDataRoot, home]) {
+  for (const path of [claudeRoot, codexRoot, codexSkills, portableRoot, appDataRoot, home]) {
     assert.equal(existsSync(path), false, `dry-run must not create ${path}`);
   }
 });
@@ -74,26 +78,30 @@ test('normal init creates files, preserves settings, backs up, and stays idempot
   const base = mkdtempSync(join(tmpdir(), 'aimet-init-write-'));
   const claudeRoot = join(base, 'Claude state');
   const codexRoot = join(base, 'Codex state');
+  const codexSkills = join(base, 'user skills');
   const home = join(base, 'home');
   const portableRoot = join(base, 'VS Code Portable');
   const vscodeUser = join(portableRoot, 'user-data', 'User');
   const claudeSettings = join(claudeRoot, 'settings.json');
   const codexHooks = join(codexRoot, 'hooks.json');
+  const legacyCodexPrompt = join(codexRoot, 'prompts', 'metrics.md');
   const copilotHooks = join(home, '.copilot', 'hooks', 'aimet.json');
 
   mkdirSync(claudeRoot, { recursive: true });
   mkdirSync(codexRoot, { recursive: true });
   mkdirSync(join(home, '.copilot', 'hooks'), { recursive: true });
+  mkdirSync(join(codexRoot, 'prompts'), { recursive: true });
   mkdirSync(vscodeUser, { recursive: true });
   const originalClaude = JSON.stringify({ theme: 'dark', hooks: { PreToolUse: [{ command: 'keep' }] } });
   const originalCodex = JSON.stringify({ approval: 'ask', hooks: { Before: [{ command: 'keep' }] } });
   const originalCopilot = JSON.stringify({ version: 1, hooks: { Start: [{ command: 'keep' }] } });
   writeFileSync(claudeSettings, originalClaude);
   writeFileSync(codexHooks, originalCodex);
+  writeFileSync(legacyCodexPrompt, 'legacy prompt: keep me\n');
   writeFileSync(copilotHooks, originalCopilot);
 
   initClaude(false, claudeRoot);
-  initCodex(false, codexRoot);
+  initCodex(false, codexRoot, codexSkills);
   initCopilot(false, {
     home,
     env: { VSCODE_PORTABLE: portableRoot },
@@ -105,11 +113,13 @@ test('normal init creates files, preserves settings, backs up, and stays idempot
   assert.equal(readFileSync(`${codexHooks}.bak`, 'utf8'), originalCodex);
   assert.equal(readFileSync(`${copilotHooks}.bak`, 'utf8'), originalCopilot);
   assert.ok(existsSync(join(claudeRoot, 'commands', 'metrics.md')));
-  assert.ok(existsSync(join(codexRoot, 'prompts', 'metrics.md')));
+  assert.ok(existsSync(join(codexSkills, 'aimet-metrics', 'SKILL.md')));
+  assert.ok(existsSync(join(codexSkills, 'aimet-metrics', 'agents', 'openai.yaml')));
+  assert.equal(readFileSync(legacyCodexPrompt, 'utf8'), 'legacy prompt: keep me\n');
   assert.ok(existsSync(join(vscodeUser, 'prompts', 'metrics.prompt.md')));
 
   initClaude(false, claudeRoot);
-  initCodex(false, codexRoot);
+  initCodex(false, codexRoot, codexSkills);
   initCopilot(false, {
     home,
     env: { VSCODE_PORTABLE: portableRoot },
@@ -124,14 +134,21 @@ test('normal init creates files, preserves settings, backs up, and stays idempot
   assert.equal(codex.approval, 'ask');
   assert.equal(copilot.version, 1);
   assert.equal(nestedCommandCount(claude.hooks.SessionEnd, 'aimet hook claude'), 1);
-  assert.equal(directCommandCount(codex.hooks.SessionEnd, 'aimet hook codex'), 1);
+  assert.equal(nestedCommandCount(claude.hooks.SubagentStop, 'aimet hook claude'), 1);
+  assert.equal(nestedCommandCount(codex.hooks.SessionEnd, 'aimet hook codex'), 1);
+  assert.equal(nestedCommandCount(codex.hooks.SubagentStop, 'aimet hook codex'), 1);
+  assert.equal(codex.hooks.SessionEnd.find((entry) =>
+    entry?.hooks?.some((hook) => hook?.command === 'aimet hook codex')
+  ).hooks[0].timeout, 3);
   assert.equal(directCommandCount(copilot.hooks.Stop, 'aimet hook copilot'), 1);
+  assert.equal(directCommandCount(copilot.hooks.SubagentStop, 'aimet hook copilot'), 1);
 });
 
 test('similar text or a wrong-shaped command does not masquerade as an installed hook', () => {
   const base = mkdtempSync(join(tmpdir(), 'aimet-init-exact-hook-'));
   const claudeRoot = join(base, 'claude');
   const codexRoot = join(base, 'codex');
+  const codexSkills = join(base, 'user skills');
   const home = join(base, 'home');
   const portableRoot = join(base, 'portable');
   const claudeSettings = join(claudeRoot, 'settings.json');
@@ -159,7 +176,7 @@ test('similar text or a wrong-shaped command does not masquerade as an installed
   ] } }));
 
   initClaude(false, claudeRoot);
-  initCodex(false, codexRoot);
+  initCodex(false, codexRoot, codexSkills);
   initCopilot(false, {
     home,
     env: { VSCODE_PORTABLE: portableRoot },
@@ -171,8 +188,44 @@ test('similar text or a wrong-shaped command does not masquerade as an installed
   const codex = json(codexHooks);
   const copilot = json(copilotHooks);
   assert.equal(nestedCommandCount(claude.hooks.SessionEnd, 'aimet hook claude'), 1);
-  assert.equal(directCommandCount(codex.hooks.SessionEnd, 'aimet hook codex'), 1);
+  assert.equal(nestedCommandCount(codex.hooks.SessionEnd, 'aimet hook codex'), 1);
+  assert.equal(directCommandCount(codex.hooks.SessionEnd, 'aimet hook codex'), 0);
   assert.equal(directCommandCount(copilot.hooks.Stop, 'aimet hook copilot'), 1);
+});
+
+test('Copilot init installs standard and COPILOT_HOME hooks without duplicating either', () => {
+  const base = mkdtempSync(join(tmpdir(), 'aimet-init-copilot-home-'));
+  const home = join(base, 'home');
+  const configuredHome = join(base, 'configured Copilot home');
+  const options = {
+    home,
+    env: { COPILOT_HOME: configuredHome },
+    os: platform(),
+    cwd: base,
+  };
+
+  initCopilot(false, options);
+  initCopilot(false, options);
+
+  for (const root of [join(home, '.copilot'), configuredHome]) {
+    const cfg = json(join(root, 'hooks', 'aimet.json'));
+    assert.equal(cfg.version, 1);
+    assert.equal(directCommandCount(cfg.hooks.Stop, 'aimet hook copilot'), 1);
+    assert.equal(directCommandCount(cfg.hooks.SubagentStop, 'aimet hook copilot'), 1);
+  }
+});
+
+test('init refuses malformed hooks containers instead of overwriting user settings', () => {
+  const base = mkdtempSync(join(tmpdir(), 'aimet-init-hook-shape-'));
+  const claudeRoot = join(base, 'claude');
+  mkdirSync(claudeRoot, { recursive: true });
+  const settings = join(claudeRoot, 'settings.json');
+  const original = JSON.stringify({ theme: 'dark', hooks: { SessionEnd: { command: 'keep' } } });
+  writeFileSync(settings, original);
+
+  assert.throws(() => initClaude(false, claudeRoot), /hooks\.SessionEnd must be a JSON array/);
+  assert.equal(readFileSync(settings, 'utf8'), original);
+  assert.equal(existsSync(`${settings}.bak`), false);
 });
 
 test('normal Copilot init does not create a missing configured VS Code user directory', () => {

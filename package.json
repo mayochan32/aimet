@@ -1,6 +1,6 @@
 {
   "name": "@mayo32/aimet",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "AI Metrics - collect time & token metrics from Claude Code / Codex / GitHub Copilot session logs",
   "type": "module",
   "bin": {
@@ -9,6 +9,7 @@
   "files": [
     "dist",
     "integrations",
+    "examples",
     "README.md"
   ],
   "engines": {

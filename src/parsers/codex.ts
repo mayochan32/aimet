@@ -40,19 +40,25 @@ export const codexParser: Parser = {
       if (!payload) continue;
 
       if (rec.type === 'session_meta') {
-        // Multi-agent v2 (CLI >= 0.137): subagent threads are SEPARATE
-        // rollout files where payload.session_id holds the PARENT's id and
-        // payload.id holds this thread's own id. Keying by session_id there
-        // would collide with the parent row, so distinguish the two.
+        // Subagent threads have separate rollout files. Current metadata uses
+        // parent_thread_id explicitly; older multi-agent v2 logs placed the
+        // parent in session_id while id held the child's own thread id.
         const own = typeof payload.id === 'string' ? payload.id : '';
         const sess = typeof payload.session_id === 'string' ? payload.session_id : '';
         if (payload.thread_source === 'subagent') {
           sessionId = own || sess;
-          if (sess && sess !== sessionId) parentSessionId = sess;
+          const explicitParent = typeof payload.parent_thread_id === 'string'
+            ? payload.parent_thread_id
+            : '';
+          if (explicitParent && explicitParent !== sessionId) parentSessionId = explicitParent;
+          else if (sess && sess !== sessionId) parentSessionId = sess;
           const src = payload.source as Record<string, unknown> | undefined;
           const sub = src?.subagent as Record<string, unknown> | undefined;
           const kind = sub && typeof sub === 'object' ? Object.values(sub)[0] : undefined;
-          if (typeof kind === 'string') subagentLabel = kind;
+          const spawn = isRecord(kind) ? kind : undefined;
+          if (typeof payload.agent_role === 'string') subagentLabel = payload.agent_role;
+          else if (typeof kind === 'string') subagentLabel = kind;
+          else if (typeof spawn?.agent_role === 'string') subagentLabel = spawn.agent_role;
         } else {
           sessionId = sess || own;
         }
@@ -113,3 +119,7 @@ export const codexParser: Parser = {
     };
   },
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}

@@ -151,6 +151,16 @@ test('codex subagent (multi-agent v2): keys by own thread id and links parent', 
   assert.equal(m.tokens.cacheRead, 85888);
 });
 
+test('codex subagent: current parent_thread_id metadata links the separate rollout', async () => {
+  const m = await codexParser.parseFile(fx('codex-subagent-current.jsonl'));
+  assert.ok(m);
+  assert.equal(m.sessionId, 'cccc3333-0000-0000-0000-000000000003');
+  assert.equal(m.parentSessionId, 'dddd4444-0000-0000-0000-000000000004');
+  assert.match(m.model, /\(subagent:explorer\)$/);
+  assert.equal(m.tokens.input, 400);
+  assert.equal(m.tokens.cacheRead, 600);
+});
+
 test('copilot subagent: parses span traces, splits cached input, links parent', async () => {
   const m = await copilotSubagentParser.parseFile(fx('copilot-subagent-basic.jsonl'));
   assert.ok(m);

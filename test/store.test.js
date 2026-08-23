@@ -357,6 +357,43 @@ test('copilot own-scoped parent and children are added exactly once in every vie
   store.close();
 });
 
+test('partial parent-child metrics remain unavailable instead of becoming a misleading subtotal', () => {
+  const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-')), 'm.db');
+  const store = new Store(db);
+  store.upsert(sampleMetrics({
+    tool: 'copilot', sessionId: 'partial-parent', costUsd: 0.01,
+    tokens: { input: 100, output: 10, cacheRead: 25, cacheWrite: null, reasoning: null },
+    metricScope: 'own', costSource: 'actual',
+  }));
+  store.upsert(sampleMetrics({
+    tool: 'copilot', sessionId: 'partial-child', parentSessionId: 'partial-parent',
+    costUsd: null,
+    tokens: { input: null, output: 20, cacheRead: 50, cacheWrite: null, reasoning: null },
+    metricScope: 'own', costSource: 'estimated',
+  }));
+
+  const report = reportRows(store);
+  assert.equal(report[0].input, null);
+  assert.equal(report[0].output, 30);
+  assert.equal(report[0].cost_usd, null);
+
+  const root = store.query('SELECT * FROM sessions WHERE session_id = ?', 'partial-parent')[0];
+  const kids = store.query('SELECT * FROM sessions WHERE parent_session_id = ?', 'partial-parent');
+  const total = rollupSessionRows(root, kids);
+  assert.equal(total.input_tokens, null);
+  assert.equal(total.output_tokens, 30);
+  assert.equal(total.cost_usd, null);
+  assert.ok(total.partial_fields.includes('input_tokens'));
+  assert.ok(total.partial_fields.includes('cost_usd'));
+
+  const summary = sessionSummary(store, { tool: 'copilot', id: 'partial-parent' });
+  assert.match(summary, /subagents total:.*cost n\/a/);
+  assert.match(summary, /TOTAL\(parent \+ 1 subagents\): in - .*cost n\/a/);
+  assert.doesNotMatch(summary, /subagents total:.*\+\$0\.0000/);
+  assert.match(sessionMd(root, kids), /in - .*cost n\/a/);
+  store.close();
+});
+
 test('tree-scoped parent prevents descendant double counting', () => {
   const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-')), 'm.db');
   const store = new Store(db);

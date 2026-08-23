@@ -16,8 +16,9 @@ import { copilotCliParser } from './copilotcli.js';
  *
  * Note: copilotParser and copilotSubagentParser share the tool label
  * 'copilot' so `collect --tool copilot` sweeps both; parserFor() returns
- * the chat parser (first match), which is the right target for hook
- * transcript ingestion.
+ * the chat parser (first match) for backwards compatibility. Hook and detail
+ * paths use parserForFile(), because a supplied path may be a parent or child
+ * debug span rather than a chat snapshot.
  */
 export const parsers: Parser[] = [
   claudeParser,
@@ -29,4 +30,9 @@ export const parsers: Parser[] = [
 
 export function parserFor(tool: string): Parser | undefined {
   return parsers.find((p) => p.tool === (tool as Tool));
+}
+
+/** Select the parser that owns an exact log path when a tool has multiple formats. */
+export function parserForFile(tool: string, path: string): Parser | undefined {
+  return parsers.find((p) => p.tool === (tool as Tool) && p.isLogFile(path));
 }

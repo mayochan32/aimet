@@ -9,7 +9,7 @@ Log: `<log-dir>/rollout-2026-07-04T17-10-43-019f2c2e-0e3e-71a1-a16a-3be4113ff76e
 | session_id | 019f2c2e-0e3e-71a1-a16a-3be4113ff76e |
 | id | 019f2c2e-0e3e-71a1-a16a-3be4113ff76e |
 | timestamp | 2026-07-04T08:10:43.680Z |
-| cwd | /Users/hal/Documents/地域図鑑作成 |
+| cwd | /workspace/example-project |
 | originator | Codex Desktop |
 | cli_version | 0.142.3 |
 | source | vscode |

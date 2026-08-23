@@ -1,5 +1,6 @@
-import { basename, dirname } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { Parser, SessionMetrics, TokenUsage } from '../types.js';
+import { copilotHome } from '../paths.js';
 import { jsonlRecords, activeSeconds, durationSeconds } from './util.js';
 
 /**
@@ -15,14 +16,14 @@ import { jsonlRecords, activeSeconds, durationSeconds } from './util.js';
  *
  * IMPORTANT LIMITATION: Copilot CLI records OUTPUT tokens only. There is no
  * input / cache / prompt token field anywhere in the log, so input, cacheR,
- * cacheW and reasoning are always 0, and cost is left null (an output-only
+ * cacheW and reasoning are left null, and cost is also null (an output-only
  * API-equivalent would badly understate the real cost, so we don't fake one).
  */
 export const copilotCliParser: Parser = {
   tool: 'copilot-cli',
 
   defaultDirs() {
-    return ['.copilot/session-state'];
+    return [join(copilotHome(), 'session-state')];
   },
 
   isLogFile(path: string) {

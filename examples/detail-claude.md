@@ -7,7 +7,7 @@ Log: `<log-dir>/7dbc8ba3-8dd9-4e11-a0b7-69ffa0feae22.jsonl`
 | key | value |
 | --- | --- |
 | sessionId | 7dbc8ba3-8dd9-4e11-a0b7-69ffa0feae22 |
-| cwd | /Users/hal |
+| cwd | /workspace/example-project |
 | version | 2.1.183 |
 | gitBranch | HEAD |
 | userType | external |

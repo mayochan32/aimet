@@ -30,7 +30,7 @@ Log: `<log-dir>/debug-logs/runSubagent-Explore-call_6NQTrjpkvnZtQ38xK5CmmbNX.jso
 | user_message | 1 |
 | subagent | 1 |
 
-## LLM requests (subagent span trace)
+## LLM requests (agent debug span trace)
 
 | timestamp | model | debugName | in | cached | out | ttft | dur |
 | --- | --- | --- | --- | --- | --- | --- | --- |
