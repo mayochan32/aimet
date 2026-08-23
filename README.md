@@ -55,6 +55,36 @@ ChatGPTデスクトップアプリには「ChatGPT」と「Codex」という異�
 
 クラウドタスクをローカルへ同期・再開した場合も、aimetが取得できるのはローカルのrolloutに実際に記録された範囲です。なお、rolloutのディレクトリ階層は**セッションを最初に作成した日付**です。後日デスクトップアプリで再開すると元の日付ディレクトリのファイルへ追記されるため、更新日のディレクトリだけを手作業で確認すると見落とします。aimetは`sessions/`以下を再帰探索するため、この再開ケースも収集できます。
 
+##### Codexの`session_meta`重複とサブエージェント識別の注意
+
+> [!CAUTION]
+> Codexの公式資料では、サブエージェントが独立したAgent threadでモデル・ツール作業を行うことと、`SubagentStop`が子の`agent_id`と`agent_transcript_path`を渡すことは確認できます。一方、rollout JSONL内部の`session_meta`が何件現れるか、子と親のメタデータがどの順序で並ぶかは公開仕様で保証されていません。aimetは「最初の1件」や「最後の1件」という出現順序をセッション識別の根拠にしません。
+
+2026-08-23の実機検証で、クライアントとCodexバージョンによって次の形状差を確認しました。これはOS固有の仕様ではなく、実測したクライアント／バージョンの差です。
+
+- macOSのChatGPTデスクトップアプリで確認したCodex `0.142.3`～`0.148.0-alpha.9`の子17 rolloutは、いずれも子自身の`session_meta`を1件だけ持っていました。親rolloutに同一IDの`session_meta`が繰り返される例はありましたが、どのレコードを選んでも識別結果は同じでした。
+- WindowsのVS Code拡張に同梱されたCodex `0.149.0-alpha.4.1`では、1つの子rolloutに「子の`thread_source: "subagent"`と`parent_thread_id`を持つメタデータ」と「親の`thread_source: "user"`を持つメタデータ」の両方が含まれる例を確認しました。検証ログでは子→親の順でしたが、その順序を保証する公式仕様は確認できません。
+
+過去のパーサは`session_meta`を出現順に処理していたため、後から現れた親IDで子IDを上書きし、親と子が同じDB主キーになる不具合がありました。その結果、子が既存の親と重複したように扱われ、サブエージェントのトークンが集計から消える可能性がありました。
+
+現行aimetは、次の順序非依存ロジックで処理します。
+
+1. 1ファイル内のすべての`session_meta`を候補として読み取り、読み取り中はセッションIDを確定しません。
+2. `rollout-<timestamp>-<uuid>.jsonl`のUUIDと候補の自スレッドIDが一致する場合は、その一致をファイル自身の識別候補を絞る整合性根拠にします。この対応関係もJSONLの公開安定APIではないため、後述の明示メタデータと矛盾しないことも確認します。
+3. ファイル名だけで確定できない場合は、`thread_source: "subagent"`または`source.subagent`を持つ候補を子として優先します。子の自IDに`payload.id`を使い、親IDは現行形式の`payload.parent_thread_id`、それがない旧形式では子IDと異なる`payload.session_id`から取得します。
+4. 同じ子ID・親IDのメタデータが複数回現れても同一候補として扱います。子→親、親→子のどちらの順序でも同じ結果になります。
+5. 異なる子IDが複数候補になる、または同じ子IDに異なる親IDが紐付くなど、根拠が矛盾する場合は推測でDBへ保存しません。`aimet collect`は対象ファイルを収集エラーとしてstderrに表示し、最後の`N errors`に含めます。
+6. IDと親子関係を決定した後、選ばれた各rolloutの`token_count.info.total_token_usage`の累積最大値を1回だけ保存します。`session_meta`の件数はトークンの加算回数に影響しません。
+
+`aimet hook codex`はCodexの終了処理を失敗させないため、収集に失敗してもexit 0と有効なJSONを返します。Codex更新後や重要な集計の前は、手動の`aimet collect --tool codex`を実行して`0 errors`を確認してください。新しいログ形式を検出した場合は、ログ全体を公開せず、`session_meta`のIDやパスを匿名化した最小再現例で報告してください。
+
+公式仕様で確認できる範囲と、aimetが互換性対応する内部ログの境界は次を参照してください。
+
+- [OpenAI: Codex Subagents（子は独立したAgent threadでモデル・ツール作業を行う）](https://learn.chatgpt.com/docs/agent-configuration/subagents)
+- [OpenAI: Codex Hooks（`SessionEnd`は親のみ、`SubagentStop`は`agent_id`と`agent_transcript_path`を持つ）](https://learn.chatgpt.com/docs/hooks)
+
+rollout JSONLの`session_meta`配置と順序は、上記の公式ページに安定仕様として記載されていません。そのためaimetは、公式に確認できる親・子のスレッド分離を前提にしつつ、既知のJSONL形式を自動テストと実機E2Eで継続的に検証します。
+
 ##### `CODEX_HOME`を変更するときの注意
 
 OpenAIの公式仕様では、`CODEX_HOME`はCLI・IDE拡張・app-serverが使うCodex状態ルートで、未設定時は`~/.codex`です。aimetも**aimetプロセスから見える`CODEX_HOME`**を読み、`<CODEX_HOME>/sessions`を自動探索します。既定値を使う場合は通常、各クライアントとaimetが同じ場所を参照します。
@@ -340,7 +370,7 @@ npm run test:e2e:copilot-windows
 
 - **Claude**: assistantレコードの `usage` を合計し、`in` / `out` / `cacheR` / `cacheW` が期待値になること。リトライ/ストリーミングで**同じmessage IDが重複しても二重計上せず**、ターン数も過大計上しないこと。公式の`<session-id>/subagents/agent-<agent-id>.jsonl`配置では親と子を別行にし、同じ`sessionId`が記録されても衝突せず、親子合計に各1回だけ含まれること。途中に壊れたJSONL行があっても無視して処理を続けること。
 - **未知モデルとゼロ使用量**: 単価表にないモデルの非ゼロ使用量はコストを`null`にすること。一方、in / out / cacheR / cacheWがすべて明示的に`0`なら、未知モデルでも正確な`$0`とすること。`null`（未計測）はゼロとみなさないこと。
-- **Codex**: `token_count` の累積値から**最大値**を採用し、`input_tokens` から `cached_input_tokens` を差し引いて非キャッシュ入力に分離すること。reasoningトークンも取得すること。
+- **Codex**: `token_count` の累積値から**最大値**を採用し、`input_tokens` から `cached_input_tokens` を差し引いて非キャッシュ入力に分離すること。reasoningトークンも取得すること。子→親と親→子の両方の`session_meta`順序で同じ親子IDになり、同一メタデータの重複は許容する一方、異なる子IDや親IDの矛盾はエラーにすること。
 - **Codex（モデル不明）**: 既定単価にフォールバックしつつ、単価が推定であることを **`estimated: true`** で明示すること。
 - **Copilot（Chat）**: ObjectMutationLogの`Set` / `Push` / `Delete`を順番どおり復元できること。`main.jsonl`と`child_session_ref`で参照された各子JSONLはスパンIDで重複排除し、親子のトークンとnano-AIUが生ログの値に一致すること。
 - **Copilot（親子集計）**: `main.jsonl` を同じIDの `chatSessions` より優先し、親と子を各1回だけ加算すること。実ログから匿名化したgolden fixtureで **22.0478895 AI Credits** と正確なトークン数を固定値照合すること。
@@ -848,7 +878,7 @@ cost = ( input × 入力単価
 - **冪等性**: `(tool, session_id)` を主キーに、最終イベント時刻とログの情報量で更新を判定します。Copilotの同じ親IDは `main.jsonl` > `chatSessions` の固定優先順位とし、取り込み順や時刻に左右されません。
 - **Copilotの集計範囲**: スパントレース由来の親子は `own`（自分のLLM呼び出しのみ）として保存します。過去形式の親が `tree`（子を含む累計）の場合は、集計時に子を再加算しません。report / session / Markdownはすべて同じ共通ロールアップを使います。
 - **Codexのトークン**: `token_count` は累積値のため最大値を採用。`input_tokens` は `cached_input_tokens` を含むため、共通スキーマでは差し引いて「非キャッシュ入力」として記録します。
-- **Codexのマルチエージェント**: サブエージェントは別のrolloutファイルになり、`session_meta.thread_source: "subagent"`で判別します。自スレッドのキーは`payload.id`とし、現行形式では`payload.parent_thread_id`、旧形式では自IDと異なる`payload.session_id`を親として`parent_session_id`へ保存します。この優先順位により現行・旧rolloutの両方で親子をリンクします。トークン台帳はスレッドごとに独立しているため、親1回＋子ごと1回を加算します。参照: [OpenAI公式ソースのrollout ThreadItem](https://github.com/openai/codex/blob/main/codex-rs/rollout/src/list.rs)、[OpenAI公式ソースのサブエージェント作成](https://github.com/openai/codex/blob/main/codex-rs/core/src/codex_delegate.rs)、[OpenAI: Codex Subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents)
+- **Codexのマルチエージェント**: サブエージェントは別のrolloutファイルになり、ファイル内のすべての`session_meta`を読んだ後に識別を決定します。rolloutファイル名のUUIDと自スレッドIDの一致を検証し、`session_meta.thread_source: "subagent"`または`source.subagent`で子候補を判別します。自スレッドのキーは`payload.id`とし、現行形式では`payload.parent_thread_id`、旧形式では自IDと異なる`payload.session_id`を親として`parent_session_id`へ保存します。出現順序には依存せず、矛盾する候補は誤って合算せず収集エラーにします。トークン台帳はスレッドごとに独立しているため、親1回＋子ごと1回を加算します。詳細は「Codexの`session_meta`重複とサブエージェント識別の注意」を参照してください。参照: [OpenAI公式ソースのrollout ThreadItem](https://github.com/openai/codex/blob/main/codex-rs/rollout/src/list.rs)、[OpenAI公式ソースのサブエージェント作成](https://github.com/openai/codex/blob/main/codex-rs/core/src/codex_delegate.rs)、[OpenAI: Codex Subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents)
 - **Claude Codeのサブエージェント**: 公式配置`<session-id>/subagents/agent-<agent-id>.jsonl`から親IDと子IDを取得し、子を`<parent-session-id>/agent-<agent-id>`の一意なDB行として親へリンクします。親・子とも`own`スコープなので、グループ集計は各トランスクリプトを1回だけ加算します。
 - **重複排除**: Claudeのログは同一APIメッセージが複数レコードに分かれることがあるため、messageIdで重複排除して集計します（detailはあるがまま出力）。
 - **推定値フラグ**: ログから実測できない値は `estimated` フラグ付きで区別します。

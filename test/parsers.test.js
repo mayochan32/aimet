@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 import { claudeParser } from '../dist/parsers/claude.js';
@@ -159,6 +159,118 @@ test('codex subagent: current parent_thread_id metadata links the separate rollo
   assert.match(m.model, /\(subagent:explorer\)$/);
   assert.equal(m.tokens.input, 400);
   assert.equal(m.tokens.cacheRead, 600);
+});
+
+test('codex subagent identity is independent of parent/child session_meta order', async () => {
+  const lines = readFileSync(fx('codex-subagent-current.jsonl'), 'utf8').trim().split('\n');
+  assert.equal(JSON.parse(lines[0]).payload.thread_source, 'subagent');
+  assert.equal(JSON.parse(lines[1]).payload.thread_source, 'user');
+
+  const root = mkdtempSync(join(tmpdir(), 'aimet-codex-meta-order-'));
+  const path = join(root, 'rollout-parent-before-child.jsonl');
+  writeFileSync(path, [lines[1], lines[0], ...lines.slice(2)].join('\n') + '\n');
+
+  const m = await codexParser.parseFile(path);
+  assert.ok(m);
+  assert.equal(m.sessionId, 'cccc3333-0000-0000-0000-000000000003');
+  assert.equal(m.parentSessionId, 'dddd4444-0000-0000-0000-000000000004');
+  assert.match(m.model, /\(subagent:explorer\)$/);
+  assert.equal(m.tokens.input, 400);
+  assert.equal(m.tokens.cacheRead, 600);
+});
+
+test('codex repeated equivalent session_meta records are harmless', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-codex-meta-repeat-'));
+  const path = join(
+    root,
+    'rollout-2026-08-23T01-00-00-eeee5555-0000-0000-0000-000000000005.jsonl'
+  );
+  const meta = {
+    timestamp: '2026-08-23T01:00:00.000Z',
+    type: 'session_meta',
+    payload: {
+      id: 'eeee5555-0000-0000-0000-000000000005',
+      session_id: 'eeee5555-0000-0000-0000-000000000005',
+      thread_source: 'user',
+      cwd: '/proj/repeated',
+    },
+  };
+  writeFileSync(path, [
+    meta,
+    { ...meta, timestamp: '2026-08-23T01:00:00.500Z' },
+    { timestamp: '2026-08-23T01:00:01.000Z', type: 'turn_context', payload: { model: 'gpt-5.5' } },
+    { timestamp: '2026-08-23T01:00:02.000Z', type: 'event_msg', payload: {
+      type: 'token_count', info: { total_token_usage: {
+        input_tokens: 10, cached_input_tokens: 4, output_tokens: 2,
+        reasoning_output_tokens: 1, total_tokens: 12,
+      } },
+    } },
+  ].map(JSON.stringify).join('\n') + '\n');
+
+  const m = await codexParser.parseFile(path);
+  assert.ok(m);
+  assert.equal(m.sessionId, 'eeee5555-0000-0000-0000-000000000005');
+  assert.equal(m.parentSessionId, null);
+  assert.equal(m.project, '/proj/repeated');
+});
+
+test('codex rejects conflicting subagent identities instead of guessing by order', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-codex-meta-conflict-'));
+  const path = join(root, 'rollout-conflicting-subagents.jsonl');
+  const records = [
+    { timestamp: '2026-08-23T01:00:00.000Z', type: 'session_meta', payload: {
+      id: '11111111-0000-0000-0000-000000000001',
+      parent_thread_id: 'aaaaaaaa-0000-0000-0000-000000000001',
+      thread_source: 'subagent',
+    } },
+    { timestamp: '2026-08-23T01:00:00.500Z', type: 'session_meta', payload: {
+      id: '22222222-0000-0000-0000-000000000002',
+      parent_thread_id: 'aaaaaaaa-0000-0000-0000-000000000001',
+      thread_source: 'subagent',
+    } },
+    { timestamp: '2026-08-23T01:00:01.000Z', type: 'turn_context', payload: { model: 'gpt-5.5' } },
+    { timestamp: '2026-08-23T01:00:02.000Z', type: 'event_msg', payload: {
+      type: 'token_count', info: { total_token_usage: {
+        input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, total_tokens: 2,
+      } },
+    } },
+  ];
+  writeFileSync(path, records.map(JSON.stringify).join('\n') + '\n');
+
+  await assert.rejects(
+    codexParser.parseFile(path),
+    /ambiguous Codex subagent metadata/
+  );
+});
+
+test('codex rejects conflicting parents for the same child identity', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-codex-parent-conflict-'));
+  const childId = '33333333-0000-0000-0000-000000000003';
+  const path = join(root, `rollout-2026-08-23T01-00-00-${childId}.jsonl`);
+  const records = [
+    { timestamp: '2026-08-23T01:00:00.000Z', type: 'session_meta', payload: {
+      id: childId,
+      parent_thread_id: 'aaaaaaaa-0000-0000-0000-000000000001',
+      thread_source: 'subagent',
+    } },
+    { timestamp: '2026-08-23T01:00:00.500Z', type: 'session_meta', payload: {
+      id: childId,
+      parent_thread_id: 'bbbbbbbb-0000-0000-0000-000000000002',
+      thread_source: 'subagent',
+    } },
+    { timestamp: '2026-08-23T01:00:01.000Z', type: 'turn_context', payload: { model: 'gpt-5.5' } },
+    { timestamp: '2026-08-23T01:00:02.000Z', type: 'event_msg', payload: {
+      type: 'token_count', info: { total_token_usage: {
+        input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, total_tokens: 2,
+      } },
+    } },
+  ];
+  writeFileSync(path, records.map(JSON.stringify).join('\n') + '\n');
+
+  await assert.rejects(
+    codexParser.parseFile(path),
+    /ambiguous Codex rollout filename/
+  );
 });
 
 test('copilot subagent: parses span traces, splits cached input, links parent', async () => {
