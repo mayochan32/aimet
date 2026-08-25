@@ -5,8 +5,8 @@
 | tool | copilot |
 | project | unknown |
 | model | gpt-5.3-codex |
-| started | 2026-07-05 11:53:20 (+09:00) |
-| ended | 2026-07-05 11:54:18 (+09:00) |
+| start | 2026-07-05 11:53:20 (+09:00) |
+| last | 2026-07-05 11:54:18 (+09:00) |
 | active / wall | 0.01h / 0.02h |
 | turns | 1 |
 | input tokens | 31,255 |

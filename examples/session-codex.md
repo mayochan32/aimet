@@ -5,8 +5,8 @@
 | tool | codex |
 | project | /workspace/example-project |
 | model | gpt-5.5 |
-| started | 2026-07-07 05:47:57 (+09:00) |
-| ended | 2026-07-07 07:57:18 (+09:00) |
+| start | 2026-07-07 05:47:57 (+09:00) |
+| last | 2026-07-07 07:57:18 (+09:00) |
 | active / wall | 1.44h / 2.16h |
 | turns | 26 |
 | input tokens | 1,047,771 |

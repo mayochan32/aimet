@@ -411,7 +411,7 @@ npm run test:e2e:copilot-windows
 
 **`test/examples.test.js` — 配布サンプルの品質**
 
-- `examples/`の9種類（report、3ツールのsession、Claude/Codex/Copilot Chat/Copilotスパン/Copilot CLIのdetail）が欠けていないことを検証します。
+- `examples/`の10種類（report、sessions、3ツールのsession、Claude/Codex/Copilot Chat/Copilotスパン/Copilot CLIのdetail）が欠けていないことを検証します。
 - 個人ホームパスが残っていないこと、コストのツール別意味、デバッグスパンの現行見出し、不明な子コストを含む合計の`n/a`表示がサンプルに反映されていることを検証します。
 - READMEからリンクする各サンプルが実在することを検証します。`examples/`はnpm配布パッケージにも含めます。
 
@@ -427,6 +427,7 @@ aimet report                        # 日次サマリー（テキスト表）
 aimet report --period weekly --by project
 aimet report --tool claude          # 特定ツールに絞り込み
 aimet report --by model --json      # JSON出力（BI・スプレッドシート連携用）
+aimet sessions --tool codex         # session IDと親子関係の一覧
 aimet session --tool claude         # 直近セッションのサマリ
 aimet detail --tool codex           # 直近セッションの構造化された詳細をJSON出力
 aimet detail --tool codex --raw     # 対応する元レコード・巨大フィールドも追加
@@ -437,6 +438,7 @@ aimet detail --tool claude --file <log.jsonl>  # DB未登録のログを直接�
 
 ```bash
 aimet report --by tool --md report.md
+aimet sessions --tool codex --md sessions.md
 aimet session --tool codex --md session.md
 aimet detail --tool claude --md detail.md
 ```
@@ -487,7 +489,7 @@ aimet <command> [options]
 
 ```console
 $ aimet --version
-2.1.0
+2.2.0
 ```
 
 実行中のaimetと同じ配布パッケージの`package.json`からバージョンを表示します。複数PCや複数ユーザーで調査する場合は、不具合報告にこの出力を含めてください。
@@ -535,6 +537,57 @@ DB内のセッションを期間バケットで集計して表示する。
 
 ---
 
+### aimet sessions — セッションID一覧
+
+```text
+aimet sessions [--tool <tool>] [--id <prefix>] [--since <days>]
+               [--start <YYYYMMDDhhmmss>] [--end <YYYYMMDDhhmmss>]
+               [--limit <1..1000> | --all] [--json] [--md <file>]
+```
+
+DBへ収集済みのセッションを開始時刻の新しい順に列挙する。ログを自動収集するコマンドではないため、最新状態が必要なら先に`aimet collect`を実行する。通常セッションと親セッションは`kind = session`、`parent_session_id`を持つ子は`kind = subagent`と表示する。
+
+```console
+$ aimet sessions --tool codex --limit 2
+
+2026-08-25 10:52:43 (+09:00) -> 2026-08-25 10:58:44 (+09:00) | codex | subagent | gpt-5.6-luna
+  id     : 01a0369e-a9ef-7cc3-be86-b88778b6f62c
+  parent : 019fb871-6a21-7493-b301-f44904776241
+
+2026-08-25 09:42:18 (+09:00) -> 2026-08-25 11:06:31 (+09:00) | codex | session | gpt-5.6-sol
+  id     : 019fb871-6a21-7493-b301-f44904776241
+
+showing 2 of 13 matching sessions
+
+last means the last observed event, not confirmed completion
+```
+
+| オプション | 説明 |
+|---|---|
+| `--tool <claude\|codex\|copilot\|copilot-cli>` | 指定ツールだけを表示する |
+| `--id <prefix>` | session IDの前方一致で絞る。出力上のIDは短縮せず完全な値を表示する |
+| `--since <days>` | 直近N日に開始したセッションだけを表示する |
+| `--start <時刻>` / `--end <時刻>` | `started_at`が指定範囲内の行だけを表示する。入力形式とローカル時刻の扱いは`report`と同じ |
+| `--limit <件数>` | 表示上限。デフォルト50、1～1,000 |
+| `--all` | 件数制限なし。`--limit`とは併用不可 |
+| `--json` | 完全なIDとUTC日時をJSON配列で標準出力する。`--md`とは併用不可 |
+| `--md <file>` | start / last / tool / kind / session ID / parent ID / modelをMarkdown表へ保存する |
+
+人間向けの標準出力とMarkdownは`YYYY-MM-DD HH:mm:ss (+HH:MM)`のローカル時刻、JSONは`YYYY-MM-DDTHH:mm:ss.sssZ`のUTCで出力する。`start`は最初に観測したイベント、`last`は最後に観測したイベントであり、セッションの終了確定を意味しない。実行中または後から再開されたセッションでは、再収集時に`last`と使用量が更新される。
+
+JSONの各行は`tool`、`session_id`、`parent_session_id`、`kind`、`model`、`started_at`、`last_event_at`、`turns`を持つ。JSON／構造化detail／DBの日時はISO 8601 UTCへ統一し、`detail --raw`内の原本レコードだけは元ログの表現を変更しない。
+
+DBでも終了を確定できない事実に合わせ、v2.2.0から時刻列を`started_at`と`last_event_at`に統一した。旧版にあった`ended_at`は実際には`last_event_at`と同じ値を保存しており、終了イベントを保証する列ではなかった。既存DBは初回起動時に自動移行し、収集済みの行と`last_event_at`を維持したまま重複列だけを削除する。
+
+一覧で得たIDは、先頭部分だけを既存の単数コマンドへ渡せる。
+
+```bash
+aimet session --tool codex --id 01a0369e
+aimet detail --tool codex --id 01a0369e
+```
+
+---
+
 ### aimet session — セッションサマリ
 
 ```
@@ -542,6 +595,8 @@ aimet session [--tool <tool>] [--id <prefix>] [--md <file>]
 ```
 
 条件に合う**最新の1セッション**のサマリを表示する。
+
+標準出力とMarkdownの時刻はローカル時刻で、`time`の左側が`start`、右側が`last`である。`last`は最後に観測したイベントであり、終了確定を意味しない。
 
 | オプション | 説明 |
 |---|---|
@@ -623,18 +678,18 @@ aimet init <claude|codex|copilot> [--dry-run]
 ### レベル1: `aimet report` — 期間集計（PM向けサマリ)
 
 ```
-| period     | start                     | end                       | tool   | sessions | turns | active | wall   | input | output | cacheR | cacheW | cost($) |
+| period     | start                     | last                      | tool   | sessions | turns | active | wall   | input | output | cacheR | cacheW | cost($) |
 | 2026-07-04 | 2026-07-04 17:11:32 (+09:00) | 2026-07-05 08:10:05 (+09:00) | codex | 1 | 24 | 2.12h | 14.98h | 2.15M | 158.2k | 26.05M | 0 | 7.52 |
 ```
 
 | 項目 | 意味 |
 |---|---|
 | period | 集計バケット（日/週/月、**ローカル日付**基準） |
-| start / end | 期間内の最初のセッション開始・最後の終了時刻（ローカル時刻、秒まで） |
+| start / last | 期間内の最初のセッション開始・最後に観測したイベント（ローカル時刻、秒・UTCオフセット付き）。lastは終了確定を意味しない |
 | sessions | セッション数 |
 | turns | エージェントの応答ターン数（≒依頼したタスクの粒度） |
 | active | **実働時間**。イベント間隔が5分を超えた区間をアイドルとして除外した時間 |
-| wall | **実時間**。セッション開始から終了までの経過時間（放置時間を含む） |
+| wall | **実時間**。セッション開始から最後に観測したイベントまでの経過時間（放置時間を含む）。終了確定ではない |
 | input | 非キャッシュ入力トークン（Codexはcached分を差し引いた値） |
 | output | 出力トークン（Codexはreasoning分を含む） |
 | cacheR | キャッシュ読み取りトークン（プロンプトキャッシュのヒット量） |
@@ -840,7 +895,7 @@ cost = ( input × 入力単価
 
 ### 内蔵単価で対応しているモデル
 
-以下は**v2.1.0、2026-08-25確認時点**の`src/pricing.ts`と一致する一覧です。金額はすべて1MトークンあたりUSDで、cacheWはClaudeでは5分TTLの書き込み単価です。Claudeの1時間TTLはログの内訳を使って表のcacheWの1.6倍で計算します。同じ行に複数のIDがある場合は同一単価です。
+以下は**v2.2.0、2026-08-25確認時点**の`src/pricing.ts`と一致する一覧です。金額はすべて1MトークンあたりUSDで、cacheWはClaudeでは5分TTLの書き込み単価です。Claudeの1時間TTLはログの内訳を使って表のcacheWの1.6倍で計算します。同じ行に複数のIDがある場合は同一単価です。
 
 | 提供元 | モデル | 対応するモデルID | input | output | cacheR | cacheW | 条件・備考 |
 |---|---|---|---:|---:|---:|---:|---|
@@ -937,12 +992,12 @@ $ aimet collect
 scanned 23 files: +6 new, ~1 updated, 16 unchanged, 0 errors
 
 $ aimet report --by tool
-    period     tool  sess  turns  active    wall      in     out  cacheR  cacheW  cost($)
-----------  -------  ----  -----  ------  ------  ------  ------  ------  ------  -------
-2026-07-07    codex     2     32   1.47h   2.19h   1.07M   99.6k  20.54M       -     4.85
-2026-07-07  copilot     5      5   0.00h   0.06h  135.6k   23.8k  505.3k       -     0.22
-2026-07-05  copilot     1      1   0.01h   0.02h   31.3k    1.6k       -       -     0.06
-2026-06-19   claude     1     13   0.26h   0.55h      29    3.9k  292.8k   17.4k     0.25
+    period                         start                          last     tool  sess  turns  active    wall      in     out  cacheR  cacheW  cost($)
+----------  ----------------------------  ----------------------------  -------  ----  -----  ------  ------  ------  ------  ------  ------  -------
+2026-07-07  2026-07-07 05:47:57 (+09:00)  2026-07-07 07:57:18 (+09:00)    codex     2     32   1.47h   2.19h   1.07M   99.6k  20.54M       -     4.85
+2026-07-07  2026-07-07 06:36:59 (+09:00)  2026-07-07 06:40:19 (+09:00)  copilot     5      5   0.00h   0.06h  135.6k   23.8k  505.3k       -     0.22
+2026-07-05  2026-07-05 11:53:20 (+09:00)  2026-07-05 11:54:18 (+09:00)  copilot     1      1   0.01h   0.02h   31.3k    1.6k       -       -     0.06
+2026-06-19  2026-06-19 18:21:03 (+09:00)  2026-06-19 18:54:04 (+09:00)   claude     1     13   0.26h   0.55h      29    3.9k  292.8k   17.4k     0.25
 
 ( * = includes estimated values | Claude/Codex: API-equivalent USD | Copilot actual: AI Credits x $0.01; estimated/mixed rows may include API-equivalent estimates | Copilot CLI: cost unavailable )
 コストは参考値。実際の実行環境に合わせて計算してください。
@@ -968,7 +1023,7 @@ $ aimet session --id golden-parent      # 実ログを匿名化したgolden fixt
 session : copilot golden-parent-1eaf50d0
 project : unknown
 model   : gpt-5.4-mini
-time    : 2026-07-06T21:36:59.000Z -> 2026-07-06T21:40:19.000Z (active 0.00h / wall 0.06h)
+time    : 2026-07-07 06:36:59 (+09:00) -> 2026-07-07 06:40:19 (+09:00) (active 0.00h / wall 0.06h)
 turns   : 1
 tokens  : in 13.5k / out 2.2k / cacheR 90.1k / cacheW -
 cost    : $0.0223 (actual, 2.23 Copilot credits)
@@ -1032,6 +1087,7 @@ wrote ~/.claude/commands/metrics.md
 実際のセッションログから生成した各出力レベルのサンプルを [`examples/`](examples/) に置いています。
 
 - [report.md](examples/report.md) — 期間集計（`aimet report --by tool --md`）
+- [sessions.md](examples/sessions.md) — session ID・親子関係の一覧（`aimet sessions --tool codex --md`）
 - [session-claude.md](examples/session-claude.md) / [session-codex.md](examples/session-codex.md) / [session-copilot.md](examples/session-copilot.md) — セッションサマリ
 - [detail-claude.md](examples/detail-claude.md) / [detail-codex.md](examples/detail-codex.md) / [detail-copilot.md](examples/detail-copilot.md) / [detail-copilot-subagent.md](examples/detail-copilot-subagent.md) / [detail-copilotcli.md](examples/detail-copilotcli.md) — セッションログの構造化詳細
 

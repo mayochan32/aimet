@@ -82,7 +82,6 @@ export const copilotCliParser: Parser = {
       project: cwd || 'unknown',
       model: model || 'unknown',
       startedAt: first,
-      endedAt: last,
       durationSec: durationSeconds(first, last),
       activeSec: activeSeconds(timestamps),
       tokens,

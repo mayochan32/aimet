@@ -239,7 +239,6 @@ export const copilotSubagentParser: Parser = {
         : referencedProject !== 'unknown' ? 'structured-reference' : 'unknown',
       model: `${model || 'unknown'}${parentSessionId && label ? ` (${label})` : ''}`,
       startedAt: new Date(firstTs).toISOString(),
-      endedAt: new Date(lastTs).toISOString(),
       durationSec: Math.round((lastTs - firstTs) / 1000),
       activeSec: Math.round(activeMs / 1000),
       tokens,

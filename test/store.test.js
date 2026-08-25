@@ -20,7 +20,6 @@ function sampleMetrics(overrides = {}) {
     project: '/proj',
     model: 'claude-sonnet-4-6',
     startedAt: '2026-06-01T00:00:00.000Z',
-    endedAt: '2026-06-01T00:10:00.000Z',
     durationSec: 600,
     activeSec: 300,
     tokens: { input: 10, output: 20, cacheRead: 100, cacheWrite: 5, reasoning: 0 },
@@ -98,6 +97,44 @@ test('store migration adds project provenance and allows an exact later upgrade'
     project: '/exact/project',
     project_source: 'session-store',
   });
+  migrated.close();
+});
+
+test('store migration removes ended_at while preserving last observed session data', () => {
+  const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-v22-')), 'm.db');
+  const raw = new DatabaseSync(db);
+  raw.exec(`
+    CREATE TABLE sessions (
+      tool TEXT NOT NULL, session_id TEXT NOT NULL, log_path TEXT NOT NULL,
+      project TEXT NOT NULL, project_source TEXT NOT NULL DEFAULT 'unknown',
+      model TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT NOT NULL,
+      duration_sec INTEGER NOT NULL, active_sec INTEGER NOT NULL,
+      input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,
+      cache_write_tokens INTEGER, reasoning_tokens INTEGER, cost_usd REAL,
+      estimated INTEGER NOT NULL DEFAULT 0,
+      metric_scope TEXT NOT NULL DEFAULT 'own',
+      cost_source TEXT NOT NULL DEFAULT 'estimated', turns INTEGER NOT NULL,
+      last_event_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      parent_session_id TEXT, PRIMARY KEY (tool, session_id)
+    );
+    INSERT INTO sessions VALUES (
+      'codex', 'legacy-ended-row', '/logs/legacy.jsonl', '/project', 'log',
+      'gpt-5.6-sol', '2026-08-25T00:00:00.000Z', '2026-08-25T00:10:00.000Z',
+      600, 300, 10, 20, 30, 0, 5, 0.01, 0, 'own', 'estimated', 2,
+      '2026-08-25T00:10:00.000Z', '2026-08-25T00:10:01.000Z', NULL
+    );
+  `);
+  raw.close();
+
+  const migrated = new Store(db);
+  const cols = migrated.query('PRAGMA table_info(sessions)').map((r) => r.name);
+  assert.equal(cols.includes('ended_at'), false);
+  assert.equal(cols.includes('last_event_at'), true);
+  const row = migrated.query('SELECT * FROM sessions WHERE session_id = ?', 'legacy-ended-row')[0];
+  assert.equal(row.started_at, '2026-08-25T00:00:00.000Z');
+  assert.equal(row.last_event_at, '2026-08-25T00:10:00.000Z');
+  assert.equal(row.input_tokens, 10);
+  assert.equal(row.cost_usd, 0.01);
   migrated.close();
 });
 

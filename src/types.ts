@@ -44,7 +44,6 @@ export interface SessionMetrics {
   /** primary model used in the session */
   model: string;
   startedAt: string; // ISO 8601
-  endedAt: string;   // ISO 8601
   /** wall clock duration in seconds */
   durationSec: number;
   /** active time: sum of event gaps <= GAP_THRESHOLD, in seconds */
@@ -60,7 +59,7 @@ export interface SessionMetrics {
   costSource?: 'actual' | 'estimated' | 'mixed';
   /** number of assistant turns / tasks observed */
   turns: number;
-  /** ISO timestamp of the last event ingested (for idempotent upsert) */
+  /** Last observed event in ISO 8601; not proof that the session completed. */
   lastEventAt: string;
   /** parent session id when this is a subagent (child) session; else null */
   parentSessionId?: string | null;

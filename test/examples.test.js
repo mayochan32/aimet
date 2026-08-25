@@ -18,6 +18,7 @@ test('published examples are sanitized and use current output semantics', () => 
     'session-claude.md',
     'session-codex.md',
     'session-copilot.md',
+    'sessions.md',
   ]);
   const combined = files.map((name) => readFileSync(join(examplesDir, name), 'utf8')).join('\n');
   assert.doesNotMatch(combined, /\/Users\/hal|\\Users\\hal/i);
@@ -32,6 +33,10 @@ test('published examples are sanitized and use current output semantics', () => 
   assert.match(
     readFileSync(join(examplesDir, 'session-codex.md'), 'utf8'),
     /TOTAL \(parent \+ subagents\).*cost n\/a/
+  );
+  assert.match(
+    readFileSync(join(examplesDir, 'sessions.md'), 'utf8'),
+    /last: 最後に観測したイベント日時/
   );
 });
 

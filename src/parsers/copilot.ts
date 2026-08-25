@@ -415,7 +415,6 @@ export const copilotParser: Parser = {
       projectSource: projectInfo.source,
       model: model || 'unknown',
       startedAt: iso(first),
-      endedAt: iso(last),
       durationSec: Math.round((last - first) / 1000),
       activeSec: Math.round(activeMs / 1000),
       tokens,

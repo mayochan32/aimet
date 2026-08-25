@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -31,6 +31,8 @@ test('CLI help documents --version and exits successfully', () => {
   assert.equal(result.stderr, '');
   assert.match(result.stdout, /aimet --version/);
   assert.match(result.stdout, /show the installed aimet version/);
+  assert.match(result.stdout, /aimet sessions/);
+  assert.match(result.stdout, /--limit <1\.\.1000> \| --all/);
 });
 
 test('detail --file requires an explicit valid tool', () => {
@@ -42,6 +44,26 @@ test('detail --file requires an explicit valid tool', () => {
   const unknown = run('detail', '--tool', 'not-a-tool', '--file', fixture);
   assert.equal(unknown.status, 1);
   assert.match(unknown.stderr, /unknown tool/);
+});
+
+test('structured detail normalizes timestamps to UTC while --raw preserves source records', () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-detail-time-'));
+  const fixture = join(root, 'claude-offset.jsonl');
+  writeFileSync(fixture, JSON.stringify({
+    type: 'assistant',
+    timestamp: '2026-08-25T10:00:00+09:00',
+    message: { id: 'msg-time', model: 'claude-sonnet-5', content: [], usage: {} },
+  }) + '\n');
+
+  const normal = run('detail', '--tool', 'claude', '--file', fixture);
+  assert.equal(normal.status, 0, normal.stderr);
+  assert.equal(JSON.parse(normal.stdout).requests[0].timestamp, '2026-08-25T01:00:00.000Z');
+
+  const raw = run('detail', '--tool', 'claude', '--file', fixture, '--raw');
+  assert.equal(raw.status, 0, raw.stderr);
+  const request = JSON.parse(raw.stdout).requests[0];
+  assert.equal(request.timestamp, '2026-08-25T01:00:00.000Z');
+  assert.equal(request.rawRecord.timestamp, '2026-08-25T10:00:00+09:00');
 });
 
 test('Copilot detail chooses the span parser from the exact log path', () => {

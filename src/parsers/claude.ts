@@ -109,7 +109,6 @@ export const claudeParser: Parser = {
       projectSource: 'log',
       model: model || 'unknown',
       startedAt: first,
-      endedAt: last,
       durationSec: durationSeconds(first, last),
       activeSec: activeSeconds(timestamps),
       tokens,

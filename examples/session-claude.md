@@ -5,8 +5,8 @@
 | tool | claude |
 | project | /workspace/example-project |
 | model | claude-sonnet-4-6 |
-| started | 2026-06-19 18:21:03 (+09:00) |
-| ended | 2026-06-19 18:54:04 (+09:00) |
+| start | 2026-06-19 18:21:03 (+09:00) |
+| last | 2026-06-19 18:54:04 (+09:00) |
 | active / wall | 0.26h / 0.55h |
 | turns | 13 |
 | input tokens | 29 |

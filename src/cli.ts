@@ -14,6 +14,9 @@ Usage:
               [--json] [--md <file>]
               (--start/--end are LOCAL time; shorter forms like YYYYMMDD are
                padded to the start/end of the unit respectively)
+  aimet sessions [--tool <tool>] [--id <prefix>] [--since <days>]
+              [--start <YYYYMMDDhhmmss>] [--end <YYYYMMDDhhmmss>]
+              [--limit <1..1000> | --all] [--json] [--md <file>]
   aimet session [--tool <tool>] [--id <prefix>] [--md <file>]
   aimet detail  [--tool <tool>] [--id <prefix>] [--file <log.jsonl>]
               [--raw] [--md <file>]
@@ -61,8 +64,8 @@ async function main(): Promise<void> {
   const [
     { Store },
     { collect, ingestFile },
-    { report, reportRows, sessionSummary, sessionRow, childrenRows, parseTimeArg },
-    { reportMd, sessionMd, detailMd },
+    { report, reportRows, sessionsList, sessionsRows, sessionSummary, sessionRow, childrenRows, parseTimeArg },
+    { reportMd, sessionsMd, sessionMd, detailMd },
     { parserFor, parserForFile },
     { initTool },
     { detail },
@@ -88,6 +91,8 @@ async function main(): Promise<void> {
       file: { type: 'string' },
       start: { type: 'string' },
       end: { type: 'string' },
+      limit: { type: 'string' },
+      all: { type: 'boolean' },
       json: { type: 'boolean' },
       raw: { type: 'boolean' },
       md: { type: 'string' },
@@ -135,6 +140,46 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'sessions': {
+      if (values.limit !== undefined && values.all) {
+        throw new Error('aimet sessions: --limit and --all cannot be used together');
+      }
+      if (values.json && values.md) {
+        throw new Error('aimet sessions: --json and --md cannot be used together');
+      }
+      const store = new Store();
+      try {
+        const opts = {
+          tool: values.tool,
+          id: values.id,
+          sinceDays: values.since === undefined ? undefined : Number(values.since),
+          startISO: values.start ? parseTimeArg(values.start) : undefined,
+          endISO: values.end ? parseTimeArg(values.end, true) : undefined,
+          limit: values.all ? undefined : values.limit === undefined ? 50 : Number(values.limit),
+        };
+        if (values.md) {
+          const result = sessionsRows(store, opts);
+          const filters = [
+            values.tool ? `tool=${values.tool}` : '',
+            values.id ? `id=${values.id}` : '',
+            values.since ? `since=${values.since}` : '',
+            values.start ? `start=${values.start}` : '',
+            values.end ? `end=${values.end}` : '',
+            values.all ? 'all' : `limit=${opts.limit}`,
+          ].filter(Boolean);
+          writeFileSync(values.md, sessionsMd(result.rows, result.total, filters));
+          console.log(`wrote ${values.md}`);
+        } else if (values.json) {
+          console.log(JSON.stringify(sessionsRows(store, opts).rows, null, 2));
+        } else {
+          console.log(sessionsList(store, opts));
+        }
+      } finally {
+        store.close();
+      }
+      break;
+    }
+
     case 'session': {
       const store = new Store();
       if (values.md) {
@@ -171,7 +216,7 @@ async function main(): Promise<void> {
         const rows = store.query(
           `SELECT tool, log_path FROM sessions
            ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-           ORDER BY ended_at DESC LIMIT 1`,
+           ORDER BY last_event_at DESC LIMIT 1`,
           ...params
         );
         store.close();

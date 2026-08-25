@@ -72,7 +72,7 @@ export class Store {
         project_source TEXT NOT NULL DEFAULT 'unknown',
         model TEXT NOT NULL,
         started_at TEXT NOT NULL,
-        ended_at TEXT NOT NULL,
+        last_event_at TEXT NOT NULL,
         duration_sec INTEGER NOT NULL,
         active_sec INTEGER NOT NULL,
         input_tokens INTEGER NOT NULL,
@@ -85,7 +85,6 @@ export class Store {
         metric_scope TEXT NOT NULL DEFAULT 'own',
         cost_source TEXT NOT NULL DEFAULT 'estimated',
         turns INTEGER NOT NULL,
-        last_event_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         PRIMARY KEY (tool, session_id)
       );
@@ -115,7 +114,7 @@ export class Store {
           project_source TEXT NOT NULL DEFAULT 'unknown',
           model TEXT NOT NULL,
           started_at TEXT NOT NULL,
-          ended_at TEXT NOT NULL,
+          last_event_at TEXT NOT NULL,
           duration_sec INTEGER NOT NULL,
           active_sec INTEGER NOT NULL,
           input_tokens INTEGER,
@@ -128,19 +127,18 @@ export class Store {
           metric_scope TEXT NOT NULL DEFAULT 'own',
           cost_source TEXT NOT NULL DEFAULT 'estimated',
           turns INTEGER NOT NULL,
-          last_event_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           parent_session_id TEXT,
           PRIMARY KEY (tool, session_id)
         );
         INSERT INTO sessions_new SELECT tool, session_id, log_path, project,
           CASE WHEN project = 'unknown' THEN 'unknown' ELSE 'legacy' END, model,
-          started_at, ended_at, duration_sec, active_sec,
+          started_at, last_event_at, duration_sec, active_sec,
           input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
           cost_usd, estimated,
           CASE WHEN tool = 'copilot-cli' THEN 'tree' ELSE 'own' END,
           CASE WHEN tool = 'copilot' AND estimated = 0 THEN 'actual' ELSE 'estimated' END,
-          turns, last_event_at, updated_at, parent_session_id
+          turns, updated_at, parent_session_id
           FROM sessions;
         DROP TABLE sessions;
         ALTER TABLE sessions_new RENAME TO sessions;
@@ -169,6 +167,57 @@ export class Store {
     if (!currentCols.some((c) => c.name === 'project_source')) {
       this.db.exec(`ALTER TABLE sessions ADD COLUMN project_source TEXT NOT NULL DEFAULT 'unknown'`);
       this.db.exec(`UPDATE sessions SET project_source = 'legacy' WHERE project <> 'unknown'`);
+    }
+    // v2.2: ended_at never proved completion; it duplicated last_event_at.
+    // Rebuild existing databases so the schema names the observed fact only.
+    const finalCols = this.db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[];
+    if (finalCols.some((c) => c.name === 'ended_at')) {
+      this.db.exec(`
+        BEGIN;
+        CREATE TABLE sessions_v22 (
+          tool TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          log_path TEXT NOT NULL,
+          project TEXT NOT NULL,
+          project_source TEXT NOT NULL DEFAULT 'unknown',
+          model TEXT NOT NULL,
+          started_at TEXT NOT NULL,
+          last_event_at TEXT NOT NULL,
+          duration_sec INTEGER NOT NULL,
+          active_sec INTEGER NOT NULL,
+          input_tokens INTEGER,
+          output_tokens INTEGER,
+          cache_read_tokens INTEGER,
+          cache_write_tokens INTEGER,
+          reasoning_tokens INTEGER,
+          cost_usd REAL,
+          estimated INTEGER NOT NULL DEFAULT 0,
+          metric_scope TEXT NOT NULL DEFAULT 'own',
+          cost_source TEXT NOT NULL DEFAULT 'estimated',
+          turns INTEGER NOT NULL,
+          updated_at TEXT NOT NULL,
+          parent_session_id TEXT,
+          PRIMARY KEY (tool, session_id)
+        );
+        INSERT INTO sessions_v22 (
+          tool, session_id, log_path, project, project_source, model,
+          started_at, last_event_at, duration_sec, active_sec,
+          input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+          reasoning_tokens, cost_usd, estimated, metric_scope, cost_source,
+          turns, updated_at, parent_session_id
+        ) SELECT
+          tool, session_id, log_path, project, project_source, model,
+          started_at, last_event_at, duration_sec, active_sec,
+          input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+          reasoning_tokens, cost_usd, estimated, metric_scope, cost_source,
+          turns, updated_at, parent_session_id
+        FROM sessions;
+        DROP TABLE sessions;
+        ALTER TABLE sessions_v22 RENAME TO sessions;
+        CREATE INDEX idx_sessions_started ON sessions(started_at);
+        CREATE INDEX idx_sessions_project ON sessions(project);
+        COMMIT;
+      `);
     }
   }
 
@@ -245,33 +294,32 @@ export class Store {
     this.db
       .prepare(
         `INSERT INTO sessions (tool, session_id, log_path, project, project_source, model,
-           started_at, ended_at, duration_sec, active_sec,
+           started_at, last_event_at, duration_sec, active_sec,
            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
            cost_usd, estimated, metric_scope, cost_source,
-           turns, last_event_at, updated_at, parent_session_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           turns, updated_at, parent_session_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(tool, session_id) DO UPDATE SET
            log_path=excluded.log_path, project=excluded.project,
            project_source=excluded.project_source, model=excluded.model,
-           started_at=excluded.started_at, ended_at=excluded.ended_at,
+           started_at=excluded.started_at, last_event_at=excluded.last_event_at,
            duration_sec=excluded.duration_sec, active_sec=excluded.active_sec,
            input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,
            cache_read_tokens=excluded.cache_read_tokens, cache_write_tokens=excluded.cache_write_tokens,
            reasoning_tokens=excluded.reasoning_tokens, cost_usd=excluded.cost_usd,
            estimated=excluded.estimated, metric_scope=excluded.metric_scope,
            cost_source=excluded.cost_source, turns=excluded.turns,
-           last_event_at=excluded.last_event_at, updated_at=excluded.updated_at,
+           updated_at=excluded.updated_at,
            parent_session_id=excluded.parent_session_id`
       )
       .run(
         m.tool, m.sessionId, m.logPath, project, projectSource, m.model,
-        m.startedAt, m.endedAt, m.durationSec, m.activeSec,
+        m.startedAt, m.lastEventAt, m.durationSec, m.activeSec,
         m.tokens.input, m.tokens.output, m.tokens.cacheRead, m.tokens.cacheWrite,
         m.tokens.reasoning, m.costUsd, m.estimated ? 1 : 0,
         m.metricScope ?? (m.tool === 'copilot-cli' ? 'tree' : 'own'),
         m.costSource ?? (m.tool === 'copilot' && !m.estimated ? 'actual' : 'estimated'),
-        m.turns,
-        m.lastEventAt, new Date().toISOString(), m.parentSessionId ?? null
+        m.turns, new Date().toISOString(), m.parentSessionId ?? null
       );
     if (knownProject(project)) this.backfillChildProjects(m.tool, m.sessionId, project);
     return existing ? 'updated' : 'inserted';

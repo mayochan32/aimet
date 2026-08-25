@@ -11,6 +11,16 @@ export interface ReportOpts {
   json?: boolean;
 }
 
+export interface SessionsOpts {
+  tool?: string;
+  id?: string;
+  sinceDays?: number;
+  startISO?: string;
+  endISO?: string;
+  /** Undefined means --all; otherwise a positive integer up to 1000. */
+  limit?: number;
+}
+
 /**
  * Parse a LOCAL-time stamp "YYYYMMDD[hh[mm[ss]]]" into an ISO(UTC) string.
  * Missing trailing parts default to the start of the unit; pass end=true to
@@ -44,6 +54,21 @@ const num = (v: unknown) => Number(v ?? 0);
 // as column names). Reject anything outside the known set.
 const GROUP_COLUMNS = new Set(['tool', 'project', 'model']);
 const PERIODS = new Set(['daily', 'weekly', 'monthly']);
+const TOOLS = new Set(['claude', 'codex', 'copilot', 'copilot-cli']);
+
+/** ISO timestamp -> local human time "YYYY-MM-DD HH:mm:ss (+09:00)". */
+export function fmtLocal(iso: unknown): string {
+  const d = new Date(String(iso ?? ''));
+  if (Number.isNaN(d.getTime())) return String(iso ?? '');
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const ymdhms = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const off = -d.getTimezoneOffset();
+  const sign = off >= 0 ? '+' : '-';
+  const hh = String(Math.floor(Math.abs(off) / 60)).padStart(2, '0');
+  const mm = String(Math.abs(off) % 60).padStart(2, '0');
+  return `${ymdhms} (${sign}${hh}:${mm})`;
+}
 
 export function fmtTokens(n: number): string {
   if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
@@ -108,8 +133,8 @@ export function reportRows(store: Store, opts: ReportOpts = {}): Record<string, 
 
   return store.query(
     `SELECT ${bucket} AS period${group},
-       MIN(started_at) AS first_start,
-       MAX(ended_at) AS last_end,
+       MIN(started_at) AS started_at,
+       MAX(last_event_at) AS last_event_at,
        COUNT(*) AS sessions,
        SUM(turns) AS turns,
        SUM(duration_sec) AS duration_sec,
@@ -132,9 +157,11 @@ export function report(store: Store, opts: ReportOpts = {}): string {
   if (opts.json) return JSON.stringify(rows, null, 2);
   if (rows.length === 0) return 'No data. Run `aimet collect` first.';
 
-  const header = ['period', ...(opts.by ? [opts.by] : []), 'sess', 'turns', 'active', 'wall', 'in', 'out', 'cacheR', 'cacheW', 'cost($)'];
+  const header = ['period', 'start', 'last', ...(opts.by ? [opts.by] : []), 'sess', 'turns', 'active', 'wall', 'in', 'out', 'cacheR', 'cacheW', 'cost($)'];
   const lines = rows.map((r) => [
     String(r.period),
+    fmtLocal(r.started_at),
+    fmtLocal(r.last_event_at),
     ...(opts.by ? [String(r[opts.by!]).slice(0, 28)] : []),
     String(r.sessions),
     String(r.turns),
@@ -154,6 +181,76 @@ export function report(store: Store, opts: ReportOpts = {}): string {
     'Copilot actual: AI Credits x $0.01; estimated/mixed rows may include API-equivalent estimates | ' +
     'Copilot CLI: cost unavailable )' +
     '\nコストは参考値。実際の実行環境に合わせて計算してください。';
+}
+
+/** Filtered session metadata and total count before the display limit. */
+export function sessionsRows(
+  store: Store,
+  opts: SessionsOpts = { limit: 50 }
+): { rows: Record<string, unknown>[]; total: number } {
+  if (opts.tool && !TOOLS.has(opts.tool)) {
+    throw new Error(`invalid --tool value: ${opts.tool} (expected claude | codex | copilot | copilot-cli)`);
+  }
+  if (opts.sinceDays !== undefined &&
+      (!Number.isFinite(opts.sinceDays) || opts.sinceDays <= 0)) {
+    throw new Error('invalid --since value (expected a positive number)');
+  }
+  if (opts.limit !== undefined &&
+      (!Number.isInteger(opts.limit) || opts.limit < 1 || opts.limit > 1000)) {
+    throw new Error('invalid --limit value (expected an integer from 1 to 1000)');
+  }
+  if (opts.startISO && opts.endISO && opts.startISO > opts.endISO) {
+    throw new Error('--start must not be later than --end');
+  }
+
+  const conds: string[] = [];
+  const params: unknown[] = [];
+  if (opts.tool) { conds.push('tool = ?'); params.push(opts.tool); }
+  if (opts.id) { conds.push('session_id LIKE ?'); params.push(`${opts.id}%`); }
+  if (opts.sinceDays !== undefined) {
+    const cutoff = new Date(Date.now() - opts.sinceDays * 86_400_000).toISOString();
+    conds.push('started_at >= ?');
+    params.push(cutoff);
+  }
+  if (opts.startISO) { conds.push('started_at >= ?'); params.push(opts.startISO); }
+  if (opts.endISO) { conds.push('started_at <= ?'); params.push(opts.endISO); }
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+  const totalRow = store.query(`SELECT COUNT(*) AS total FROM sessions ${where}`, ...params)[0];
+  const limit = opts.limit === undefined ? '' : ` LIMIT ${opts.limit}`;
+  const rows = store.query(
+    `SELECT tool, session_id, parent_session_id,
+            CASE WHEN parent_session_id IS NULL THEN 'session' ELSE 'subagent' END AS kind,
+            model, started_at, last_event_at, turns
+     FROM sessions ${where}
+     ORDER BY started_at DESC, tool ASC, session_id ASC${limit}`,
+    ...params
+  );
+  return { rows, total: Number(totalRow?.total ?? 0) };
+}
+
+/** Human-readable session-id listing. */
+export function sessionsList(
+  store: Store,
+  opts: SessionsOpts = { limit: 50 }
+): string {
+  const { rows, total } = sessionsRows(store, opts);
+  if (rows.length === 0) {
+    return 'No sessions found. Run `aimet collect` first or change the filters.';
+  }
+  const blocks = rows.map((r) => {
+    const lines = [
+      `${fmtLocal(r.started_at)} -> ${fmtLocal(r.last_event_at)} | ` +
+        `${r.tool} | ${r.kind} | ${r.model}`,
+      `  id     : ${r.session_id}`,
+    ];
+    if (r.parent_session_id != null) lines.push(`  parent : ${r.parent_session_id}`);
+    return lines.join('\n');
+  });
+  return [
+    ...blocks,
+    `showing ${rows.length} of ${total} matching sessions`,
+    'last means the last observed event, not confirmed completion',
+  ].join('\n\n');
 }
 
 /** Cost semantics differ per tool: see README "コスト計算の仕組み". */
@@ -195,7 +292,7 @@ export function sessionRow(
   if (opts.id) params.push(opts.id);
   const rows = store.query(
     `SELECT * FROM sessions ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-     ORDER BY ${exactOrder} ended_at DESC LIMIT 1`,
+     ORDER BY ${exactOrder} last_event_at DESC LIMIT 1`,
     ...params
   );
   return rows[0] ?? null;
@@ -309,7 +406,8 @@ export function sessionSummary(store: Store, opts: { tool?: string; id?: string 
     ...parentLine,
     `project : ${r.project}`,
     `model   : ${r.model}`,
-    `time    : ${r.started_at} -> ${r.ended_at} (active ${fmtHours(num(r.active_sec))} / wall ${fmtHours(num(r.duration_sec))})`,
+    `time    : ${fmtLocal(r.started_at)} -> ${fmtLocal(r.last_event_at)} ` +
+      `(active ${fmtHours(num(r.active_sec))} / wall ${fmtHours(num(r.duration_sec))})`,
     `turns   : ${r.turns}`,
     `tokens  : in ${tok(r.input_tokens)} / out ${tok(r.output_tokens)} / cacheR ${tok(r.cache_read_tokens)} / cacheW ${tok(r.cache_write_tokens)}`,
     `cost    : ${r.cost_usd == null ? noCostLabel(r) : '$' + num(r.cost_usd).toFixed(4) + costLabel(r)}`,

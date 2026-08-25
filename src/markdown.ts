@@ -1,21 +1,9 @@
-import { fmtTokens, fmtHours, costLabel, noCostLabel, rollupSessionRows, tok } from './report.js';
+import { fmtLocal, fmtTokens, fmtHours, costLabel, noCostLabel, rollupSessionRows, tok } from './report.js';
 
 /** Markdown renderers for the three output levels: report / session / detail. */
 
 const num = (v: unknown) => Number(v ?? 0);
 const esc = (v: unknown) => String(v ?? '').replace(/\|/g, '\\|');
-
-/** ISO timestamp -> local time "YYYY-MM-DD HH:mm:ss (+09:00)" (machine TZ). */
-export function fmtLocal(iso: unknown): string {
-  const d = new Date(String(iso ?? ''));
-  if (Number.isNaN(d.getTime())) return String(iso ?? '');
-  const ymdhms = d.toLocaleString('sv-SE'); // YYYY-MM-DD HH:mm:ss
-  const off = -d.getTimezoneOffset();
-  const sign = off >= 0 ? '+' : '-';
-  const hh = String(Math.floor(Math.abs(off) / 60)).padStart(2, '0');
-  const mm = String(Math.abs(off) % 60).padStart(2, '0');
-  return `${ymdhms} (${sign}${hh}:${mm})`;
-}
 
 function table(header: string[], rows: string[][]): string {
   return [
@@ -40,12 +28,12 @@ export function reportMd(
   opts: { period?: string; by?: string }
 ): string {
   const by = opts.by;
-  const header = ['period', 'start', 'end', ...(by ? [by] : []), 'sessions', 'turns',
+  const header = ['period', 'start', 'last', ...(by ? [by] : []), 'sessions', 'turns',
     'active', 'wall', 'input', 'output', 'cacheR', 'cacheW', 'cost($)'];
   const body = rows.map((r) => [
     String(r.period),
-    fmtLocal(r.first_start),
-    fmtLocal(r.last_end),
+    fmtLocal(r.started_at),
+    fmtLocal(r.last_event_at),
     ...(by ? [String(r[by])] : []),
     String(r.sessions),
     String(r.turns),
@@ -65,7 +53,7 @@ export function reportMd(
     table(header, body),
     '',
     '- active: 実働時間（5分超のアイドルを除外） / wall: 実時間',
-    '- start / end: 期間内の最初のセッション開始・最後のセッション終了（ローカル時刻）',
+    '- start / last: 期間内の最初のセッション開始・最後に観測したイベント（ローカル時刻）。lastは終了確定を意味しない',
     '- cost: Claude/Codex はAPI換算USD。CopilotのactualはAI Credits × $0.01、推定・混在行はAPI換算推定を含む場合がある。Copilot CLIのコストは取得不可',
     '- `*` は推定値を含む。一部でもトークン量またはコストが不明な集計値は `-` とし、既知分だけを完全な合計として表示しない',
     '',
@@ -112,8 +100,8 @@ export function sessionMd(
         ...(r.parent_session_id ? [['parent session', String(r.parent_session_id)] as [string, string]] : []),
         ['project', String(r.project)],
         ['model', String(r.model)],
-        ['started', fmtLocal(r.started_at)],
-        ['ended', fmtLocal(r.ended_at)],
+        ['start', fmtLocal(r.started_at)],
+        ['last', fmtLocal(r.last_event_at)],
         ['active / wall', `${fmtHours(num(r.active_sec))} / ${fmtHours(num(r.duration_sec))}`],
         ['turns', String(r.turns)],
         ['input tokens', r.input_tokens == null ? '-' : num(r.input_tokens).toLocaleString()],
@@ -127,6 +115,37 @@ export function sessionMd(
     ),
     '',
     ...childSection,
+  ].join('\n');
+}
+
+export function sessionsMd(
+  rows: Record<string, unknown>[],
+  total: number,
+  filters: string[] = []
+): string {
+  return [
+    '# Sessions',
+    '',
+    `Generated: ${new Date().toISOString()}`,
+    ...(filters.length ? ['', `Filters: ${filters.join(', ')}`] : []),
+    '',
+    table(
+      ['start', 'last', 'tool', 'kind', 'session ID', 'parent ID', 'model'],
+      rows.map((r) => [
+        fmtLocal(r.started_at),
+        fmtLocal(r.last_event_at),
+        String(r.tool),
+        String(r.kind),
+        String(r.session_id),
+        r.parent_session_id == null ? '-' : String(r.parent_session_id),
+        String(r.model),
+      ])
+    ),
+    '',
+    `Showing ${rows.length} of ${total} matching sessions.`,
+    '',
+    '- last: 最後に観測したイベント日時。セッションの終了確定を意味しない',
+    '',
   ].join('\n');
 }
 

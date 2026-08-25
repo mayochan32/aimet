@@ -110,7 +110,6 @@ export const codexParser: Parser = {
       project: cwd || 'unknown',
       model: `${resolvedModel}${subagentLabel ? ` (subagent:${subagentLabel})` : ''}`,
       startedAt: first,
-      endedAt: last,
       durationSec: durationSeconds(first, last),
       activeSec: activeSeconds(timestamps),
       tokens,

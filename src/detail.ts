@@ -7,6 +7,13 @@ import { copilotSubagentParser } from './parsers/copilotsubagent.js';
  * --raw additionally attaches original records where supported.
  */
 
+/** Normalize structured timestamps to ISO 8601 UTC; raw records stay untouched. */
+function isoTimestamp(value: unknown): unknown {
+  if (value == null) return value;
+  const d = new Date(String(value));
+  return Number.isNaN(d.getTime()) ? value : d.toISOString();
+}
+
 export async function detailClaude(path: string, raw = false): Promise<Record<string, unknown>> {
   const meta: Record<string, unknown> = {};
   const turns: Record<string, unknown>[] = [];
@@ -28,7 +35,7 @@ export async function detailClaude(path: string, raw = false): Promise<Record<st
     if (typeof msg.model === 'string') models.add(msg.model);
     const content = msg.content as { type?: string; name?: string }[] | undefined;
     turns.push({
-      timestamp: rec.timestamp,
+      timestamp: isoTimestamp(rec.timestamp),
       messageId: msg.id,
       model: msg.model,
       stopReason: msg.stop_reason ?? null,
@@ -62,10 +69,10 @@ export async function detailCodex(path: string, raw = false): Promise<Record<str
       sessionMeta = raw ? payload : rest;
     } else if (t === 'turn_context') {
       if (typeof payload.model === 'string') models.add(payload.model);
-      turnContexts.push({ timestamp: rec.timestamp, ...payload });
+      turnContexts.push({ ...payload, timestamp: isoTimestamp(rec.timestamp) });
     } else if (t === 'event_msg' && payload.type === 'token_count') {
       tokenTimeline.push({
-        timestamp: rec.timestamp,
+        timestamp: isoTimestamp(rec.timestamp),
         info: payload.info ?? null,          // total + last usage, context window
         rate_limits: payload.rate_limits ?? null, // used_percent, plan_type, credits...
       });
@@ -89,7 +96,7 @@ export async function detailCopilot(path: string, raw = false): Promise<Record<s
     const res = (r.result ?? {}) as Record<string, unknown>;
     const md = (res.metadata ?? {}) as Record<string, unknown>;
     return {
-      timestamp: r.timestamp,
+      timestamp: isoTimestamp(r.timestamp),
       requestId: r.requestId,
       message: String((r.message as Record<string, unknown>)?.text ?? '').slice(0, 200),
       modelId: r.modelId,
@@ -111,7 +118,7 @@ export async function detailCopilot(path: string, raw = false): Promise<Record<s
     meta: {
       sessionId: s.sessionId,
       customTitle: s.customTitle ?? null,
-      creationDate: s.creationDate,
+      creationDate: isoTimestamp(s.creationDate),
       initialLocation: s.initialLocation,
       version: s.version,
     },
@@ -146,7 +153,7 @@ export async function detailCopilotCli(path: string, raw = false): Promise<Recor
 
     if (type === 'assistant.message' || (typeof data.outputTokens === 'number')) {
       messages.push({
-        timestamp: rec.timestamp,
+        timestamp: isoTimestamp(rec.timestamp),
         type,
         model: data.model ?? null,
         phase: data.phase ?? null,
