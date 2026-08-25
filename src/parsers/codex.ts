@@ -1,6 +1,6 @@
 import { basename, join } from 'node:path';
 import type { Parser, SessionMetrics, TokenUsage } from '../types.js';
-import { costUsd } from '../pricing.js';
+import { billsCacheWrites, costUsd, hasLongContextSurcharge } from '../pricing.js';
 import { codexHome } from '../paths.js';
 import { jsonlRecords, activeSeconds, durationSeconds } from './util.js';
 
@@ -15,10 +15,11 @@ interface CodexSessionMeta {
 /**
  * Codex CLI rollout logs:
  * ${CODEX_HOME:-~/.codex}/sessions/**&#47;rollout-<ts>-<uuid>.jsonl
- * token_count events carry CUMULATIVE totals (info.total_token_usage),
- * so we keep the maximum observed rather than summing.
- * Note: input_tokens INCLUDES cached_input_tokens; we split them apart
- * to match the common schema (input = uncached input).
+ * token_count events carry CUMULATIVE totals (info.total_token_usage), so we
+ * keep the maximum observed rather than summing. Request deltas are separately
+ * validated against last_token_usage for conditional pricing.
+ * Note: input_tokens includes cached reads and, on GPT-5.6, explicit cache
+ * writes; we split all three mutually exclusive billing classes.
  */
 export const codexParser: Parser = {
   tool: 'codex',
@@ -37,6 +38,9 @@ export const codexParser: Parser = {
     let turnCwd = '';
     let turns = 0;
     let best: Record<string, number> | null = null; // largest cumulative usage
+    let previousTotal: Record<string, number> | null = null;
+    const requestUsages: TokenUsage[] = [];
+    let requestUsageComplete = true;
     const sessionMetas: CodexSessionMeta[] = [];
 
     for await (const rec of jsonlRecords(path)) {
@@ -60,6 +64,15 @@ export const codexParser: Parser = {
           if (total && (!best || (total.total_tokens ?? 0) >= (best.total_tokens ?? 0))) {
             best = total;
           }
+          if (total && (total.total_tokens ?? 0) > (previousTotal?.total_tokens ?? 0)) {
+            const last = info?.last_token_usage as Record<string, number> | undefined;
+            if (last && usageMatchesDelta(previousTotal, total, last)) {
+              requestUsages.push(codexTokens(last));
+            } else {
+              requestUsageComplete = false;
+            }
+            previousTotal = total;
+          }
         }
       }
     }
@@ -69,14 +82,7 @@ export const codexParser: Parser = {
     const first = timestamps[0];
     const last = timestamps[timestamps.length - 1];
 
-    const cached = best.cached_input_tokens ?? 0;
-    const tokens: TokenUsage = {
-      input: Math.max(0, (best.input_tokens ?? 0) - cached),
-      output: best.output_tokens ?? 0,
-      cacheRead: cached,
-      cacheWrite: null, // OpenAI has no cache-write billing/recording -> not recorded
-      reasoning: best.reasoning_output_tokens ?? 0,
-    };
+    const tokens = codexTokens(best);
 
     // Filename fallback: rollout-2026-07-04T17-10-43-<uuid>.jsonl
     const idFromName = basename(path, '.jsonl').split('-').slice(7).join('-');
@@ -90,6 +96,13 @@ export const codexParser: Parser = {
     // Tokens are still measured, but the unit price is a guess -> mark estimated.
     const modelKnown = model !== '';
     const resolvedModel = model || 'gpt-5-codex';
+    const needsRequestPricing = hasLongContextSurcharge(resolvedModel);
+    const missingBilledCacheWrites = billsCacheWrites(resolvedModel) && tokens.cacheWrite === null;
+    const exactRequestPricing = requestUsageComplete && requestUsages.length > 0 &&
+      !requestUsages.some((usage) => billsCacheWrites(resolvedModel) && usage.cacheWrite === null);
+    const sessionCost = needsRequestPricing && exactRequestPricing
+      ? sumKnownCosts(requestUsages.map((usage) => costUsd(resolvedModel, usage)))
+      : costUsd(resolvedModel, tokens, { applyLongContextSurcharge: !needsRequestPricing });
     return {
       tool: 'codex',
       sessionId: sessionId || idFromName || basename(path, '.jsonl'),
@@ -101,14 +114,56 @@ export const codexParser: Parser = {
       durationSec: durationSeconds(first, last),
       activeSec: activeSeconds(timestamps),
       tokens,
-      costUsd: costUsd(resolvedModel, tokens),
-      estimated: !modelKnown,
+      costUsd: sessionCost,
+      estimated: !modelKnown || missingBilledCacheWrites || (needsRequestPricing && !exactRequestPricing),
       turns,
       lastEventAt: last,
       parentSessionId,
     };
   },
 };
+
+function codexTokens(usage: Record<string, number>): TokenUsage {
+  const cached = usage.cached_input_tokens ?? 0;
+  const cacheWrite = typeof usage.cache_write_input_tokens === 'number'
+    ? usage.cache_write_input_tokens
+    : null;
+  return {
+    // Codex/OpenAI input_tokens includes both cached reads and explicit cache
+    // writes. Store the mutually exclusive billing classes separately.
+    input: Math.max(0, (usage.input_tokens ?? 0) - cached - (cacheWrite ?? 0)),
+    output: usage.output_tokens ?? 0,
+    cacheRead: cached,
+    cacheWrite,
+    reasoning: usage.reasoning_output_tokens ?? 0,
+  };
+}
+
+function usageMatchesDelta(
+  previous: Record<string, number> | null,
+  total: Record<string, number>,
+  last: Record<string, number>
+): boolean {
+  const fields = [
+    'input_tokens', 'cached_input_tokens', 'cache_write_input_tokens',
+    'output_tokens', 'reasoning_output_tokens', 'total_tokens',
+  ];
+  return fields.every((field) => {
+    if (typeof last[field] !== 'number') {
+      return field === 'cache_write_input_tokens' && typeof total[field] !== 'number';
+    }
+    return (total[field] ?? 0) - (previous?.[field] ?? 0) === last[field];
+  });
+}
+
+function sumKnownCosts(costs: Array<number | null>): number | null {
+  let total = 0;
+  for (const cost of costs) {
+    if (cost === null) return null;
+    total += cost;
+  }
+  return total;
+}
 
 /**
  * Convert one session_meta payload into an identity candidate without relying

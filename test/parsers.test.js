@@ -78,6 +78,87 @@ test('codex: unknown model falls back to pricing but is flagged estimated', asyn
   assert.equal(m.estimated, true, 'guessed unit price must be flagged estimated');
 });
 
+test('codex: GPT-5.6 splits cache writes and prices each long-context request', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-codex-gpt56-'));
+  const path = join(root, 'rollout-2026-08-25T00-00-00-gpt56-pricing.jsonl');
+  const first = {
+    input_tokens: 300_000,
+    cached_input_tokens: 100_000,
+    cache_write_input_tokens: 50_000,
+    output_tokens: 1_000,
+    reasoning_output_tokens: 100,
+    total_tokens: 301_000,
+  };
+  const second = {
+    input_tokens: 100_000,
+    cached_input_tokens: 50_000,
+    cache_write_input_tokens: 10_000,
+    output_tokens: 500,
+    reasoning_output_tokens: 50,
+    total_tokens: 100_500,
+  };
+  const total = Object.fromEntries(
+    Object.keys(first).map((key) => [key, first[key] + second[key]])
+  );
+  const records = [
+    { timestamp: '2026-08-25T00:00:00.000Z', type: 'session_meta', payload: {
+      id: 'gpt56-pricing', session_id: 'gpt56-pricing', cwd: '/proj/gpt56',
+    } },
+    { timestamp: '2026-08-25T00:00:01.000Z', type: 'turn_context', payload: {
+      model: 'gpt-5.6-sol', cwd: '/proj/gpt56',
+    } },
+    { timestamp: '2026-08-25T00:00:02.000Z', type: 'event_msg', payload: {
+      type: 'token_count', info: { total_token_usage: first, last_token_usage: first },
+    } },
+    { timestamp: '2026-08-25T00:00:03.000Z', type: 'event_msg', payload: {
+      type: 'token_count', info: { total_token_usage: total, last_token_usage: second },
+    } },
+  ];
+  writeFileSync(path, records.map(JSON.stringify).join('\n') + '\n');
+
+  const m = await codexParser.parseFile(path);
+  assert.ok(m);
+  assert.equal(m.tokens.input, 190_000);
+  assert.equal(m.tokens.cacheRead, 150_000);
+  assert.equal(m.tokens.cacheWrite, 60_000);
+  assert.equal(m.tokens.output, 1_500);
+  assert.equal(m.tokens.reasoning, 150);
+  assert.equal(m.costUsd, 2.05);
+  assert.equal(m.estimated, false);
+});
+
+test('codex: GPT-5.6 old rollout without cache-write detail is explicitly estimated', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-codex-gpt56-old-'));
+  const path = join(root, 'rollout-2026-08-25T00-00-00-gpt56-old.jsonl');
+  const total = {
+    input_tokens: 10_000,
+    cached_input_tokens: 8_000,
+    output_tokens: 500,
+    reasoning_output_tokens: 50,
+    total_tokens: 10_500,
+  };
+  const records = [
+    { timestamp: '2026-08-25T00:00:00.000Z', type: 'session_meta', payload: {
+      id: 'gpt56-old', session_id: 'gpt56-old', cwd: '/proj/gpt56-old',
+    } },
+    { timestamp: '2026-08-25T00:00:01.000Z', type: 'turn_context', payload: {
+      model: 'gpt-5.6-sol', cwd: '/proj/gpt56-old',
+    } },
+    { timestamp: '2026-08-25T00:00:02.000Z', type: 'event_msg', payload: {
+      type: 'token_count', info: { total_token_usage: total, last_token_usage: total },
+    } },
+  ];
+  writeFileSync(path, records.map(JSON.stringify).join('\n') + '\n');
+
+  const m = await codexParser.parseFile(path);
+  assert.ok(m);
+  assert.equal(m.tokens.input, 2_000);
+  assert.equal(m.tokens.cacheRead, 8_000);
+  assert.equal(m.tokens.cacheWrite, null);
+  assert.equal(m.costUsd, 0.0212);
+  assert.equal(m.estimated, true);
+});
+
 test('copilot: reduces incremental diffs and prefers actual credit cost', async () => {
   const m = await copilotParser.parseFile(fx('copilot-basic.jsonl'));
   assert.ok(m);

@@ -17,7 +17,8 @@ export type ProjectSource =
  * (rendered as `-`), as opposed to a measured 0.
  * Availability by tool:
  *   claude:           in/out/cacheR/cacheW measured, reasoning null
- *   codex:            in/out/cacheR/reasoning measured, cacheW null (no such billing)
+ *   codex:            in/out/cacheR/reasoning measured; GPT-5.6 cacheW measured
+ *                     when present (older rollouts/models use null)
  *   copilot (chat):   in/out measured, cacheR/cacheW/reasoning null
  *   copilot subagent: in/out/cacheR measured, cacheW/reasoning null
  *   copilot-cli:      out measured, everything else null
