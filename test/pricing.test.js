@@ -36,6 +36,18 @@ test('pricing: GPT-5.4 through GPT-5.6 use current exact model rates', () => {
   assert.equal(costUsd('gpt-5.6-sol', usage({ cacheWrite: 100_000 })), 0.5);
 });
 
+test('pricing: deprecated GPT-5.1 Codex variants retain their official historical rates', () => {
+  assert.deepEqual(pricingTable()['gpt-5.1-codex-max'], [1.25, 10, 0.125, 0]);
+  assert.deepEqual(pricingTable()['gpt-5.1-codex-mini'], [0.25, 2, 0.025, 0]);
+  assert.equal(costUsd('gpt-5.1-codex-max', usage({ input: 1_000_000 })), 1.25);
+  assert.equal(costUsd('gpt-5.1-codex-mini', usage({ output: 1_000_000 })), 2);
+  assert.equal(
+    costUsd('gpt-5.1-codex-max-20251119', usage({ cacheRead: 1_000_000 })),
+    0.125
+  );
+  assert.equal(costUsd('gpt-5.1-codex-max-plus', usage({ input: 1_000 })), null);
+});
+
 test('pricing: long-context requests apply official input and output multipliers', () => {
   assert.equal(hasLongContextSurcharge('gpt-5.6-terra'), true);
   assert.equal(

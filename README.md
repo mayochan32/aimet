@@ -866,7 +866,9 @@ cost = ( input × 入力単価
 | OpenAI | GPT-5.4 nano | `gpt-5.4-nano` | 0.2 | 1.25 | 0.02 | 0 | — |
 | OpenAI | GPT-5.3 / GPT-5.3-Codex | `gpt-5.3` / `gpt-5.3-codex` | 1.75 | 14 | 0.175 | 0 | — |
 | OpenAI | GPT-5.2 / GPT-5.2-Codex | `gpt-5.2` / `gpt-5.2-codex` | 1.75 | 14 | 0.175 | 0 | — |
-| OpenAI | GPT-5.1 / GPT-5.1-Codex | `gpt-5.1` / `gpt-5.1-codex` | 1.25 | 10 | 0.125 | 0 | — |
+| OpenAI | GPT-5.1 | `gpt-5.1` | 1.25 | 10 | 0.125 | 0 | — |
+| OpenAI | GPT-5.1-Codex / Max | `gpt-5.1-codex` / `gpt-5.1-codex-max` | 1.25 | 10 | 0.125 | 0 | 非推奨モデル。既存・過去ログを正しく計算するため明示対応 |
+| OpenAI | GPT-5.1-Codex mini | `gpt-5.1-codex-mini` | 0.25 | 2 | 0.025 | 0 | 非推奨モデル。既存・過去ログを正しく計算するため明示対応 |
 | OpenAI | GPT-5 / GPT-5-Codex | `gpt-5` / `gpt-5-codex` | 1.25 | 10 | 0.125 | 0 | モデル名のない旧Codexログは`gpt-5-codex`へ推定フォールバック |
 | OpenAI | GPT-5 mini | `gpt-5-mini` | 0.25 | 2 | 0.025 | 0 | — |
 | OpenAI | o4-mini | `o4-mini` | 1.1 | 4.4 | 0.275 | 0 | — |

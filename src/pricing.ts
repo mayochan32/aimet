@@ -50,6 +50,8 @@ const DEFAULT_PRICING: Record<string, [number, number, number, number]> = {
   'gpt-5.3-codex': [1.75, 14, 0.175, 0],
   'gpt-5.3': [1.75, 14, 0.175, 0],
   'gpt-5.2-codex': [1.75, 14, 0.175, 0],
+  'gpt-5.1-codex-mini': [0.25, 2, 0.025, 0],
+  'gpt-5.1-codex-max': [1.25, 10, 0.125, 0],
   'gpt-5.1-codex': [1.25, 10, 0.125, 0],
   'gpt-5-codex': [1.25, 10, 0.125, 0],
   'gpt-5.2': [1.75, 14, 0.175, 0],
