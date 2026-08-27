@@ -1,4 +1,5 @@
-import { fmtLocal, fmtTokens, fmtHours, costLabel, noCostLabel, rollupSessionRows, tok } from './report.js';
+import { fmtLocal, fmtTokens, fmtHours, costLabel, noCostLabel, reportGroupColumns, rollupSessionRows, tok } from './report.js';
+import type { ReportOpts } from './report.js';
 
 /** Markdown renderers for the three output levels: report / session / detail. */
 
@@ -25,16 +26,17 @@ function kvTable(obj: Record<string, unknown>): string {
 
 export function reportMd(
   rows: Record<string, unknown>[],
-  opts: { period?: string; by?: string }
+  opts: Pick<ReportOpts, 'period' | 'by' | 'tool' | 'model'>
 ): string {
   const by = opts.by;
-  const header = ['period', 'start', 'last', ...(by ? [by] : []), 'sessions', 'turns',
+  const groupColumns = reportGroupColumns(by, opts.tool, opts.model);
+  const header = ['period', 'start', 'last', ...groupColumns, 'sessions', 'turns',
     'active', 'wall', 'input', 'output', 'cacheR', 'cacheW', 'cost($)'];
   const body = rows.map((r) => [
     String(r.period),
     fmtLocal(r.started_at),
     fmtLocal(r.last_event_at),
-    ...(by ? [String(r[by])] : []),
+    ...groupColumns.map((column) => String(r[column])),
     String(r.sessions),
     String(r.turns),
     fmtHours(num(r.active_sec)),

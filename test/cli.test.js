@@ -32,6 +32,7 @@ test('CLI help documents --version and exits successfully', () => {
   assert.match(result.stdout, /aimet --version/);
   assert.match(result.stdout, /show the installed aimet version/);
   assert.match(result.stdout, /aimet sessions/);
+  assert.match(result.stdout, /--model <model>/);
   assert.match(result.stdout, /--limit <1\.\.1000> \| --all/);
 });
 

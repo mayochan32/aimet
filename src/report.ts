@@ -4,6 +4,7 @@ export interface ReportOpts {
   period?: 'daily' | 'weekly' | 'monthly';
   by?: 'tool' | 'project' | 'model';
   tool?: string;
+  model?: string;
   sinceDays?: number;
   /** inclusive range on started_at; ISO strings (see parseTimeArg) */
   startISO?: string;
@@ -86,6 +87,23 @@ export function fmtHours(sec: number): string {
   return (sec / 3600).toFixed(2) + 'h';
 }
 
+/**
+ * Columns that identify one report row. Model names are not globally unique
+ * accounting keys: the same model used through Copilot has Copilot credit
+ * semantics, while direct Claude/Codex usage uses API-equivalent pricing.
+ */
+export function reportGroupColumns(
+  by?: ReportOpts['by'],
+  tool?: string,
+  model?: string
+): Array<'tool' | 'project' | 'model'> {
+  const columns: Array<'tool' | 'project' | 'model'> = [];
+  if (tool || model || by === 'tool' || by === 'model') columns.push('tool');
+  if (model) columns.push('model');
+  if (by && !columns.includes(by)) columns.push(by);
+  return columns;
+}
+
 /** Aggregated rows for a report (shared by text/JSON/Markdown renderers). */
 export function reportRows(store: Store, opts: ReportOpts = {}): Record<string, unknown>[] {
   if (opts.by && !GROUP_COLUMNS.has(opts.by)) {
@@ -103,7 +121,8 @@ export function reportRows(store: Store, opts: ReportOpts = {}): Record<string, 
       : period === 'monthly'
         ? `substr(${local}, 1, 7)`
         : `strftime('%Y-W%W', ${local})`;
-  const group = opts.by ? `, s.${opts.by}` : '';
+  const groupColumns = reportGroupColumns(opts.by, opts.tool, opts.model);
+  const group = groupColumns.map((column) => `, s.${column}`).join('');
   const conds: string[] = [];
   const params: unknown[] = [];
   if (opts.sinceDays) {
@@ -112,6 +131,10 @@ export function reportRows(store: Store, opts: ReportOpts = {}): Record<string, 
   if (opts.tool) {
     conds.push('s.tool = ?');
     params.push(opts.tool);
+  }
+  if (opts.model) {
+    conds.push('s.model = ?');
+    params.push(opts.model);
   }
   if (opts.startISO) {
     conds.push('s.started_at >= ?');
@@ -147,7 +170,7 @@ export function reportRows(store: Store, opts: ReportOpts = {}): Record<string, 
        MAX(estimated) AS estimated
      FROM sessions AS s ${where}
      GROUP BY period${group}
-     ORDER BY period DESC${group ? `, ${opts.by}` : ''}`,
+     ORDER BY period DESC${groupColumns.map((column) => `, ${column}`).join('')}`,
     ...params
   );
 }
@@ -157,12 +180,15 @@ export function report(store: Store, opts: ReportOpts = {}): string {
   if (opts.json) return JSON.stringify(rows, null, 2);
   if (rows.length === 0) return 'No data. Run `aimet collect` first.';
 
-  const header = ['period', 'start', 'last', ...(opts.by ? [opts.by] : []), 'sess', 'turns', 'active', 'wall', 'in', 'out', 'cacheR', 'cacheW', 'cost($)'];
+  const groupColumns = reportGroupColumns(opts.by, opts.tool, opts.model);
+  const header = ['period', 'start', 'last', ...groupColumns, 'sess', 'turns', 'active', 'wall', 'in', 'out', 'cacheR', 'cacheW', 'cost($)'];
   const lines = rows.map((r) => [
     String(r.period),
     fmtLocal(r.started_at),
     fmtLocal(r.last_event_at),
-    ...(opts.by ? [String(r[opts.by!]).slice(0, 28)] : []),
+    ...groupColumns.map((column) => column === 'model'
+      ? String(r[column])
+      : String(r[column]).slice(0, 28)),
     String(r.sessions),
     String(r.turns),
     fmtHours(num(r.active_sec)),

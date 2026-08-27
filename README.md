@@ -426,6 +426,7 @@ aimet collect --since 7             # 直近7日に更新されたログのみ
 aimet report                        # 日次サマリー（テキスト表）
 aimet report --period weekly --by project
 aimet report --tool claude          # 特定ツールに絞り込み
+aimet report --model gpt-5.6-luna   # 特定モデルに絞り込み（ツール別に表示）
 aimet report --by model --json      # JSON出力（BI・スプレッドシート連携用）
 aimet sessions --tool codex         # session IDと親子関係の一覧
 aimet session --tool claude         # 直近セッションのサマリ
@@ -489,7 +490,7 @@ aimet <command> [options]
 
 ```console
 $ aimet --version
-2.2.0
+2.2.1
 ```
 
 実行中のaimetと同じ配布パッケージの`package.json`からバージョンを表示します。複数PCや複数ユーザーで調査する場合は、不具合報告にこの出力を含めてください。
@@ -518,7 +519,7 @@ aimet collect [--tool <tool>] [--since <days>] [--dir <path>]
 
 ```
 aimet report [--period daily|weekly|monthly] [--by tool|project|model]
-             [--tool <tool>] [--since <days>]
+             [--tool <tool>] [--model <model>] [--since <days>]
              [--start <YYYYMMDDhhmmss>] [--end <YYYYMMDDhhmmss>]
              [--json] [--md <file>]
 ```
@@ -528,12 +529,15 @@ DB内のセッションを期間バケットで集計して表示する。
 | オプション | 説明 |
 |---|---|
 | `--period <daily\|weekly\|monthly>` | 集計単位（デフォルト: daily）。ローカル日付基準 |
-| `--by <tool\|project\|model>` | 指定軸で行を分割し横断比較する |
-| `--tool <tool>` | 指定ツールのセッションのみ集計する（`--by` と併用可） |
+| `--by <tool\|project\|model>` | 指定軸で行を分割し横断比較する。`model`指定時は同名モデルをツール横断で混ぜず、`tool`と`model`の組み合わせごとに分割する |
+| `--tool <tool>` | 指定ツールのセッションのみ集計する（`--by` と併用可）。標準出力・JSON・Markdownには`tool`列も出力する |
+| `--model <model>` | モデルIDの完全一致でセッションを絞り込む（`--tool`、`--by`と併用可）。同名モデルをツール横断で混ぜず、`tool`と`model`を出力する |
 | `--since <days>` | 直近N日のセッションのみ集計する |
 | `--start <時刻>` / `--end <時刻>` | セッション開始時刻（started_at）がこの範囲のものだけ集計する。**ローカル時刻**の `YYYYMMDDhhmmss` 形式。短縮形可：`20260707` は日全体、`2026070709` は9時台を指す（startは期間の頭、endは期間の末尾に自動補完）。`2026-07-07 09:00:00` のような区切り文字入りも受け付ける |
 | `--json` | 生値（未丸め）のJSONで出力する。BI・スプレッドシート連携用 |
 | `--md <file>` | Markdownの表としてファイルに書き出す |
+
+`--by model`または`--model`を指定した標準出力・JSON・Markdownには、`model`だけでなく`tool`も必ず含まれます。同じモデル名でも、Claude Code / CodexはAPI換算USD、GitHub Copilot Chatは実測AI Creditsを優先するなど、利用ツールによってコストの意味と計算規則が異なるためです。たとえばCopilot経由のClaudeモデルとClaude Codeで直接使った同名モデルは別行として集計されます。また、`--tool`で1ツールへ絞った場合も、出力の意味を明示するため`tool`列を省略しません。`--tool codex --by project`なら`tool + project`、`--model gpt-5.6-luna`なら`tool + model`、両方を指定しても重複のない列が出力されます。空白や括弧を含むモデルIDは、シェルで`--model "モデルID"`のように引用してください。
 
 ---
 
@@ -895,7 +899,7 @@ cost = ( input × 入力単価
 
 ### 内蔵単価で対応しているモデル
 
-以下は**v2.2.0、2026-08-25確認時点**の`src/pricing.ts`と一致する一覧です。金額はすべて1MトークンあたりUSDで、cacheWはClaudeでは5分TTLの書き込み単価です。Claudeの1時間TTLはログの内訳を使って表のcacheWの1.6倍で計算します。同じ行に複数のIDがある場合は同一単価です。
+以下は**v2.2.1、2026-08-27確認時点**の`src/pricing.ts`と一致する一覧です。金額はすべて1MトークンあたりUSDで、cacheWはClaudeでは5分TTLの書き込み単価です。Claudeの1時間TTLはログの内訳を使って表のcacheWの1.6倍で計算します。同じ行に複数のIDがある場合は同一単価です。
 
 | 提供元 | モデル | 対応するモデルID | input | output | cacheR | cacheW | 条件・備考 |
 |---|---|---|---:|---:|---:|---:|---|
@@ -955,7 +959,7 @@ cost = ( input × 入力単価
 
 現行のaimetスキーマは1セッションを1行で保存し、`model`も1値だけ持ちます。セッション中にモデルを変更した場合、モデルごとのトークン台帳に分割しては保存しません。そのため次の制限があります。
 
-- `aimet report --by model`は、セッション全体を最後に観測したモデルの行へ帰属させるため、モデル別の正確な配分にはなりません。
+- `aimet report --by model`はツールとモデルの組み合わせごとに行を分けますが、セッション全体を最後に観測したモデルの行へ帰属させるため、1セッション内のモデル別の正確な配分にはなりません。
 - Claude CodeとCodexのAPI換算コストは、セッション合計トークンに1つのモデル単価を適用するため、途中で単価の異なるモデルへ変更したセッションのコストは正確ではありません。
 - Copilotの実測AI Creditsはリクエストごとの消費を合計するため金額合計自体は保てますが、`--by model`のモデル別帰属は同様に正確ではありません。モデル単価へフォールバックした推定分はリクエスト単位で計算します。
 
@@ -1009,10 +1013,12 @@ $ aimet report --by tool
 
 ```console
 $ aimet report --tool codex --period weekly          # Codexだけを週次で
+$ aimet report --model gpt-5.6-luna                  # 同一モデルをツール別に表示
+$ aimet report --tool copilot --model gpt-5.6-luna   # Copilotの同モデルだけに限定
 $ aimet report --by project --since 7                # 直近7日をプロジェクト別に
 $ aimet report --start 20260705 --end 20260706       # 7/5〜7/6（ローカル時刻）
 $ aimet report --start 2026070705 --end 2026070706   # 7/7の5〜6時台だけ
-$ aimet report --by model --json > tokens.json       # 生値JSONでBI連携
+$ aimet report --by model --json > tokens.json       # tool + model別の生値JSONでBI連携
 $ aimet report --by tool --md report.md              # Markdownでファイル出力
 ```
 

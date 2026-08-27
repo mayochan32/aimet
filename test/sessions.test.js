@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 
 import { Store } from '../dist/store.js';
 import { report, reportRows, sessionsList, sessionsRows } from '../dist/report.js';
-import { sessionsMd } from '../dist/markdown.js';
+import { reportMd, sessionsMd } from '../dist/markdown.js';
 
 const cli = join(import.meta.dirname, '..', 'dist', 'cli.js');
 
@@ -138,6 +138,110 @@ test('report uses start/last names and local human timestamps', () => {
   const text = report(store, { by: 'tool' });
   assert.match(text.split('\n')[0], /period\s+start\s+last\s+tool/);
   assert.match(text, /\([+-]\d{2}:\d{2}\)/);
+  store.close();
+});
+
+test('report with --tool includes tool in text, JSON and Markdown', () => {
+  const { db } = populatedDb();
+  const store = new Store(db);
+  const opts = { tool: 'codex' };
+  const rows = reportRows(store, opts);
+  assert.ok(rows.length > 0);
+  assert.ok(rows.every((r) => r.tool === 'codex'));
+
+  const text = report(store, opts);
+  assert.match(text.split('\n')[0], /period\s+start\s+last\s+tool/);
+  assert.match(text, /codex/);
+
+  const json = JSON.parse(report(store, { ...opts, json: true }));
+  assert.ok(json.every((r) => r.tool === 'codex'));
+
+  const md = reportMd(rows, opts);
+  assert.match(md, /\| period \| start \| last \| tool \|/);
+  assert.match(md, /\| codex \|/);
+  store.close();
+});
+
+test('report with --model filters exact model and keeps tools separate in every format', () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-report-model-filter-'));
+  const db = join(root, 'metrics.db');
+  const store = new Store(db);
+  const startedAt = '2026-08-25T00:00:00.000Z';
+  const lastEventAt = '2026-08-25T00:01:00.000Z';
+  for (const tool of ['codex', 'copilot']) {
+    store.upsert(metrics(`${tool}-selected-model`, startedAt, lastEventAt, {
+      tool, model: 'shared-model', costUsd: tool === 'codex' ? 1 : 2,
+    }));
+  }
+  store.upsert(metrics('codex-other-model', startedAt, lastEventAt, {
+    model: 'other-model', costUsd: 3,
+  }));
+
+  const opts = { model: 'shared-model' };
+  const rows = reportRows(store, opts);
+  assert.deepEqual(rows.map((r) => [r.tool, r.model, r.cost_usd]), [
+    ['codex', 'shared-model', 1],
+    ['copilot', 'shared-model', 2],
+  ]);
+
+  const text = report(store, opts);
+  assert.match(text.split('\n')[0], /period\s+start\s+last\s+tool\s+model/);
+  assert.doesNotMatch(text, /other-model/);
+
+  const json = JSON.parse(report(store, { ...opts, json: true }));
+  assert.deepEqual(json.map((r) => [r.tool, r.model]), [
+    ['codex', 'shared-model'],
+    ['copilot', 'shared-model'],
+  ]);
+
+  const md = reportMd(rows, opts);
+  assert.match(md, /\| period \| start \| last \| tool \| model \|/);
+
+  store.close();
+  const cliResult = spawnSync(process.execPath, [cli, 'report', '--model', 'shared-model', '--json'], {
+    encoding: 'utf8', env: { ...process.env, AIMET_DB: db, TZ: 'UTC' },
+  });
+  assert.equal(cliResult.status, 0, cliResult.stderr);
+  assert.deepEqual(JSON.parse(cliResult.stdout).map((r) => [r.tool, r.model]), [
+    ['codex', 'shared-model'],
+    ['copilot', 'shared-model'],
+  ]);
+});
+
+test('report by model separates identical model names by tool in every format', () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-report-model-'));
+  const store = new Store(join(root, 'metrics.db'));
+  const startedAt = '2026-08-25T00:00:00.000Z';
+  const lastEventAt = '2026-08-25T00:01:00.000Z';
+  store.upsert(metrics('codex-same-model', startedAt, lastEventAt, {
+    tool: 'codex', model: 'shared-model-with-a-name-longer-than-28-characters', costUsd: 1,
+  }));
+  store.upsert(metrics('copilot-same-model', startedAt, lastEventAt, {
+    tool: 'copilot', model: 'shared-model-with-a-name-longer-than-28-characters', costUsd: 2,
+  }));
+
+  const rows = reportRows(store, { by: 'model' });
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((r) => [r.tool, r.model, r.sessions, r.cost_usd]), [
+    ['codex', 'shared-model-with-a-name-longer-than-28-characters', 1, 1],
+    ['copilot', 'shared-model-with-a-name-longer-than-28-characters', 1, 2],
+  ]);
+
+  const text = report(store, { by: 'model' });
+  assert.match(text.split('\n')[0], /period\s+start\s+last\s+tool\s+model/);
+  assert.match(text, /codex\s+shared-model-with-a-name-longer-than-28-characters/);
+  assert.match(text, /copilot\s+shared-model-with-a-name-longer-than-28-characters/);
+
+  const json = JSON.parse(report(store, { by: 'model', json: true }));
+  assert.deepEqual(json.map((r) => [r.tool, r.model]), [
+    ['codex', 'shared-model-with-a-name-longer-than-28-characters'],
+    ['copilot', 'shared-model-with-a-name-longer-than-28-characters'],
+  ]);
+
+  const md = reportMd(rows, { by: 'model' });
+  assert.match(md, /\| period \| start \| last \| tool \| model \|/);
+  assert.match(md, /\| codex \| shared-model-with-a-name-longer-than-28-characters \|/);
+  assert.match(md, /\| copilot \| shared-model-with-a-name-longer-than-28-characters \|/);
   store.close();
 });
 

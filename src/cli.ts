@@ -9,7 +9,7 @@ Usage:
   aimet --help                    (show this help)
   aimet collect [--tool claude|codex|copilot|copilot-cli] [--since <days>] [--dir <path>]
   aimet report  [--period daily|weekly|monthly] [--by tool|project|model]
-              [--tool <tool>] [--since <days>]
+              [--tool <tool>] [--model <model>] [--since <days>]
               [--start <YYYYMMDDhhmmss>] [--end <YYYYMMDDhhmmss>]
               [--json] [--md <file>]
               (--start/--end are LOCAL time; shorter forms like YYYYMMDD are
@@ -83,6 +83,7 @@ async function main(): Promise<void> {
     args: rest,
     options: {
       tool: { type: 'string' },
+      model: { type: 'string' },
       since: { type: 'string' },
       dir: { type: 'string' },
       period: { type: 'string' },
@@ -125,6 +126,7 @@ async function main(): Promise<void> {
         period: values.period as never,
         by: values.by as never,
         tool: values.tool,
+        model: values.model,
         sinceDays: values.since ? Number(values.since) : undefined,
         startISO: values.start ? parseTimeArg(values.start) : undefined,
         endISO: values.end ? parseTimeArg(values.end, true) : undefined,
