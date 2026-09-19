@@ -417,6 +417,8 @@ npm test
 
 週次Issueの通知を**GitHub Mobileプッシュとメールの両方**で受け取るには、GitHubアカウントの[通知設定](https://github.com/settings/notifications)で`Participating`の`On GitHub`と`Email`を有効にし、GitHub Mobileの`Profile → Settings → Notifications`で`Direct mentions`または`Assignments`のプッシュを有効にしてください。端末OS側のGitHub Mobile通知許可も必要です。監視処理自体がIssue投稿前に失敗した場合に備え、GitHubの通知設定にある`System → Actions`も`Email`と`Only notify for failed workflows`に設定することを推奨します。[GitHub通知の公式説明](https://docs.github.com/en/subscriptions-and-notifications/get-started/configuring-notifications)、[Actions失敗通知の公式説明](https://docs.github.com/en/subscriptions-and-notifications/how-tos/managing-github-actions-notifications)。
 
+GitHub Actionsの予定時刻は厳密な実行保証ではなく、負荷によって遅延・実行されない場合があります。また、公開リポジトリでは活動が60日間ないと定期実行が自動無効化される場合があります。予定した週にIssueが届かなければ、[Actions画面](https://github.com/mayochan32/aimet/actions)でワークフローの状態を確認し、必要なら再有効化してください。[GitHubのschedule仕様](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)。
+
 パーサ、DB更新、集計、セキュリティ、macOS/Windowsのパス解決をfixtureベースで自動検証します。さらに、Windows実機でVS Code Copilotのシングル／マルチエージェントを起動し、生ログとDBを独立した検算器で照合するE2Eスクリプトも用意しています（VS CodeへのサインインとCopilotの利用権が必要）。
 
 ```powershell
