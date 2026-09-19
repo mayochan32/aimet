@@ -2,7 +2,7 @@ import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import type { Parser, SessionMetrics, TokenUsage } from '../types.js';
-import { costUsd } from '../pricing.js';
+import { copilotCostUsd } from '../pricing.js';
 import { jsonlRecords } from './util.js';
 import {
   collectKnownWorkspaceReferences,
@@ -145,6 +145,7 @@ export const copilotSubagentParser: Parser = {
     let parentSessionId: string | null = null;
     let label = '';
     let model = '';
+    const models = new Set<string>();
     let turns = 0;
     let requests = 0;
     let firstTs = Infinity;
@@ -200,6 +201,7 @@ export const copilotSubagentParser: Parser = {
             ? attrs.model
             : typeof attrs.modelId === 'string' ? attrs.modelId : model;
           if (requestModel) model = requestModel;
+          if (requestModel) models.add(requestModel);
           const nano = finite(attrs.copilotUsageNanoAiu);
           const aiu = finite(attrs.aiu);
           if (nano !== null || aiu !== null) {
@@ -207,7 +209,7 @@ export const copilotSubagentParser: Parser = {
             actualRequests++;
           } else {
             const estimated = requestModel
-              ? costUsd(requestModel, { input: uncached, output, cacheRead: cached, cacheWrite: 0, reasoning: 0 })
+              ? copilotCostUsd(requestModel, { input: uncached, output, cacheRead: cached, cacheWrite: null, reasoning: null })
               : null;
             if (estimated === null) unknownCost = true;
             else estimatedCost += estimated;
@@ -237,7 +239,8 @@ export const copilotSubagentParser: Parser = {
       projectSource: indexedProject.project !== 'unknown'
         ? indexedProject.source
         : referencedProject !== 'unknown' ? 'structured-reference' : 'unknown',
-      model: `${model || 'unknown'}${parentSessionId && label ? ` (${label})` : ''}`,
+      model: `${models.size > 1 ? 'mixed' : model || 'unknown'}${parentSessionId && label ? ` (${label})` : ''}`,
+      accessMode: actualRequests > 0 ? 'copilot' : 'unknown',
       startedAt: new Date(firstTs).toISOString(),
       durationSec: Math.round((lastTs - firstTs) / 1000),
       activeSec: Math.round(activeMs / 1000),

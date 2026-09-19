@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { Store } from '../dist/store.js';
-import { report, reportRows, sessionsList, sessionsRows } from '../dist/report.js';
+import { report, reportRows, sessionsList, sessionsRows, otelNotice } from '../dist/report.js';
 import { reportMd, sessionsMd } from '../dist/markdown.js';
 
 const cli = join(import.meta.dirname, '..', 'dist', 'cli.js');
@@ -69,6 +69,24 @@ test('sessions: lists full ids newest first and identifies parent/subagent rows'
   assert.equal(result.rows[1].kind, 'session');
   assert.equal(result.rows[1].parent_session_id, null);
   assert.equal('ended_at' in result.rows[0], false);
+  store.close();
+});
+
+test('Copilot OTel notice is scoped to legacy sources and absent from JSON', () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-otel-notice-'));
+  const store = new Store(join(root, 'metrics.db'));
+  const start = '2026-09-20T00:00:00.000Z';
+  const last = '2026-09-20T00:00:10.000Z';
+  store.upsert(metrics('legacy', start, last, {
+    tool: 'copilot', logPath: '/logs/chatSessions/legacy.jsonl', model: 'gpt-5',
+  }));
+  assert.match(otelNotice(store, { tool: 'copilot' }), /dbSpanExporter.enabled/);
+  assert.doesNotMatch(report(store, { tool: 'copilot', json: true }), /dbSpanExporter.enabled/);
+  assert.equal(otelNotice(store, { tool: 'codex' }), '');
+  store.upsert(metrics('otel', start, last, {
+    tool: 'copilot', logPath: '/logs/agent-traces.db', model: 'gpt-5',
+  }));
+  assert.equal(otelNotice(store, { tool: 'copilot', model: 'other-model' }), '');
   store.close();
 });
 
@@ -217,7 +235,8 @@ test('report by model separates identical model names by tool in every format', 
     tool: 'codex', model: 'shared-model-with-a-name-longer-than-28-characters', costUsd: 1,
   }));
   store.upsert(metrics('copilot-same-model', startedAt, lastEventAt, {
-    tool: 'copilot', model: 'shared-model-with-a-name-longer-than-28-characters', costUsd: 2,
+    tool: 'copilot', model: 'shared-model-with-a-name-longer-than-28-characters',
+    accessMode: 'byok', provider: 'openai', costUsd: 2,
   }));
 
   const rows = reportRows(store, { by: 'model' });
@@ -230,7 +249,7 @@ test('report by model separates identical model names by tool in every format', 
   const text = report(store, { by: 'model' });
   assert.match(text.split('\n')[0], /period\s+start\s+last\s+tool\s+model/);
   assert.match(text, /codex\s+shared-model-with-a-name-longer-than-28-characters/);
-  assert.match(text, /copilot\s+shared-model-with-a-name-longer-than-28-characters/);
+  assert.match(text, /copilot\s+shared-model-with-a-name-longer-than-28-characters \[BYOK\/OpenAI\]/);
 
   const json = JSON.parse(report(store, { by: 'model', json: true }));
   assert.deepEqual(json.map((r) => [r.tool, r.model]), [
@@ -241,7 +260,36 @@ test('report by model separates identical model names by tool in every format', 
   const md = reportMd(rows, { by: 'model' });
   assert.match(md, /\| period \| start \| last \| tool \| model \|/);
   assert.match(md, /\| codex \| shared-model-with-a-name-longer-than-28-characters \|/);
-  assert.match(md, /\| copilot \| shared-model-with-a-name-longer-than-28-characters \|/);
+  assert.match(md, /\| copilot \| shared-model-with-a-name-longer-than-28-characters \[BYOK\/OpenAI\] \|/);
+  store.close();
+});
+
+test('report by model separates Copilot-hosted and BYOK uses of the same model', () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-report-access-'));
+  const store = new Store(join(root, 'metrics.db'));
+  const startedAt = '2026-08-25T00:00:00.000Z';
+  const lastEventAt = '2026-08-25T00:01:00.000Z';
+  store.upsert(metrics('same-model-byok', startedAt, lastEventAt, {
+    tool: 'copilot', model: 'gpt-5', accessMode: 'byok', provider: 'openai', costUsd: 1,
+  }));
+  store.upsert(metrics('same-model-copilot', startedAt, lastEventAt, {
+    tool: 'copilot', model: 'gpt-5', accessMode: 'copilot', provider: 'github', costUsd: 2,
+  }));
+
+  const rows = reportRows(store, { by: 'model' });
+  assert.deepEqual(rows.map((r) => [r.tool, r.access_mode, r.provider, r.model, r.cost_usd]), [
+    ['copilot', 'byok', 'openai', 'gpt-5', 1],
+    ['copilot', 'copilot', 'github', 'gpt-5', 2],
+  ]);
+  const text = report(store, { by: 'model' });
+  assert.match(text, /gpt-5 \[BYOK\/OpenAI\]/);
+  assert.doesNotMatch(text, /\[Copilot\]/);
+  assert.match(text, /copilot\s+gpt-5\s+1\s+1/);
+  const json = JSON.parse(report(store, { by: 'model', json: true }));
+  assert.deepEqual(json.map((r) => [r.access_mode, r.provider, r.model]), [
+    ['byok', 'openai', 'gpt-5'],
+    ['copilot', 'github', 'gpt-5'],
+  ]);
   store.close();
 });
 
@@ -255,7 +303,7 @@ test('CLI sessions supports JSON, Markdown and rejects conflicting options', () 
   const rows = JSON.parse(json.stdout);
   assert.equal(rows.length, 1);
   assert.deepEqual(Object.keys(rows[0]), [
-    'tool', 'session_id', 'parent_session_id', 'kind', 'model',
+    'tool', 'session_id', 'parent_session_id', 'kind', 'model', 'access_mode', 'provider',
     'started_at', 'last_event_at', 'turns',
   ]);
   assert.equal(rows[0].started_at, '2026-08-25T01:00:00.000Z');

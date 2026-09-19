@@ -44,13 +44,14 @@ export const claudeParser: Parser = {
     // Anthropic logs do not report reasoning tokens separately -> null (= not recorded).
     const tokens: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: null };
     const timestamps: string[] = [];
-    const seenMsgIds = new Set<string>();
+    const messages = new Map<string, { model: string; usage: Record<string, unknown> | null }>();
     let sessionId = '';
     let model = '';
     let cwd = '';
     let turns = 0;
-    let cw1h = 0; // 1-hour-TTL cache writes (billed 2.0x input, vs 1.25x for 5m)
-    let cw5m = 0;
+    let unknownCost = false;
+    let totalCost = 0;
+    let anonymous = 0;
 
     for await (const rec of jsonlRecords(path)) {
       const ts = rec.timestamp as string | undefined;
@@ -65,23 +66,78 @@ export const claudeParser: Parser = {
 
       // Dedupe retried/streamed duplicates of the same API message.
       // Count the turn only AFTER dedup so retries don't inflate the turn count.
-      const id = (msg.id as string) ?? (rec.uuid as string) ?? '';
-      if (id) {
-        if (seenMsgIds.has(id)) continue;
-        seenMsgIds.add(id);
+      const id = typeof msg.id === 'string' ? msg.id :
+        typeof rec.uuid === 'string' ? rec.uuid : `anonymous:${anonymous++}`;
+      const usage = msg.usage && typeof msg.usage === 'object'
+        ? msg.usage as Record<string, unknown> : null;
+      const previous = messages.get(id);
+      const output = Number(usage?.output_tokens ?? 0);
+      const previousOutput = Number(previous?.usage?.output_tokens ?? 0);
+      // Stream snapshots share an API message id. Keep the most complete
+      // usage snapshot rather than the first (which may have 0 output).
+      if (!previous || (usage && (!previous.usage || output >= previousOutput))) {
+        messages.set(id, { model: typeof msg.model === 'string' ? msg.model : model, usage });
       }
-      turns++;
-      const u = msg.usage as Record<string, number> | undefined;
+    }
+
+    turns = messages.size;
+    const models = new Set<string>();
+    for (const entry of messages.values()) {
+      const u = entry.usage;
       if (!u) continue;
-      tokens.input = (tokens.input ?? 0) + (u.input_tokens ?? 0);
-      tokens.output = (tokens.output ?? 0) + (u.output_tokens ?? 0);
-      tokens.cacheRead = (tokens.cacheRead ?? 0) + (u.cache_read_input_tokens ?? 0);
-      tokens.cacheWrite = (tokens.cacheWrite ?? 0) + (u.cache_creation_input_tokens ?? 0);
-      const cc = (u as Record<string, unknown>).cache_creation as
-        | Record<string, number>
-        | undefined;
-      cw1h += cc?.ephemeral_1h_input_tokens ?? 0;
-      cw5m += cc?.ephemeral_5m_input_tokens ?? 0;
+      const usageTokens: TokenUsage = {
+        input: Number(u.input_tokens ?? 0),
+        output: Number(u.output_tokens ?? 0),
+        cacheRead: Number(u.cache_read_input_tokens ?? 0),
+        cacheWrite: Number(u.cache_creation_input_tokens ?? 0),
+        reasoning: null,
+      };
+      const cc = u.cache_creation && typeof u.cache_creation === 'object'
+        ? u.cache_creation as Record<string, number> : null;
+      const oneHour = cc?.ephemeral_1h_input_tokens ?? 0;
+      const fiveMinute = cc?.ephemeral_5m_input_tokens ?? 0;
+      tokens.input = (tokens.input ?? 0) + (usageTokens.input ?? 0);
+      tokens.output = (tokens.output ?? 0) + (usageTokens.output ?? 0);
+      tokens.cacheRead = (tokens.cacheRead ?? 0) + (usageTokens.cacheRead ?? 0);
+      tokens.cacheWrite = (tokens.cacheWrite ?? 0) + (usageTokens.cacheWrite ?? 0);
+      if (entry.model) models.add(entry.model);
+      const writeForCost = oneHour + fiveMinute > 0
+        ? Math.round(fiveMinute + 1.6 * oneHour) : usageTokens.cacheWrite;
+      const cost = entry.model
+        ? costUsd(entry.model, { ...usageTokens, cacheWrite: writeForCost }) : null;
+      if (cost === null) unknownCost = true;
+      else totalCost += cost;
+      // Advisor usage is NOT included in the top-level executor totals.
+      const iterations = Array.isArray(u.iterations) ? u.iterations : [];
+      for (const iteration of iterations) {
+        if (!iteration || typeof iteration !== 'object') continue;
+        const advisor = iteration as Record<string, unknown>;
+        if (advisor.type !== 'advisor_message') continue;
+        const advisorModel = typeof advisor.model === 'string' ? advisor.model : '';
+        const advisorTokens: TokenUsage = {
+          input: Number(advisor.input_tokens ?? 0),
+          output: Number(advisor.output_tokens ?? 0),
+          cacheRead: Number(advisor.cache_read_input_tokens ?? 0),
+          cacheWrite: Number(advisor.cache_creation_input_tokens ?? 0),
+          reasoning: null,
+        };
+        const advisorCache = advisor.cache_creation && typeof advisor.cache_creation === 'object'
+          ? advisor.cache_creation as Record<string, number> : null;
+        const advisor1h = advisorCache?.ephemeral_1h_input_tokens ?? 0;
+        const advisor5m = advisorCache?.ephemeral_5m_input_tokens ?? 0;
+        tokens.input = (tokens.input ?? 0) + (advisorTokens.input ?? 0);
+        tokens.output = (tokens.output ?? 0) + (advisorTokens.output ?? 0);
+        tokens.cacheRead = (tokens.cacheRead ?? 0) + (advisorTokens.cacheRead ?? 0);
+        tokens.cacheWrite = (tokens.cacheWrite ?? 0) + (advisorTokens.cacheWrite ?? 0);
+        if (advisorModel) models.add(advisorModel);
+        const advisorCost = advisorModel ? costUsd(advisorModel, {
+          ...advisorTokens,
+          cacheWrite: advisor1h + advisor5m > 0
+            ? Math.round(advisor5m + 1.6 * advisor1h) : advisorTokens.cacheWrite,
+        }) : null;
+        if (advisorCost === null) unknownCost = true;
+        else totalCost += advisorCost;
+      }
     }
 
     if (timestamps.length === 0) return null;
@@ -107,7 +163,7 @@ export const claudeParser: Parser = {
       logPath: path,
       project,
       projectSource: 'log',
-      model: model || 'unknown',
+      model: models.size > 1 ? 'mixed' : ([...models][0] || model || 'unknown'),
       startedAt: first,
       durationSec: durationSeconds(first, last),
       activeSec: activeSeconds(timestamps),
@@ -115,14 +171,7 @@ export const claudeParser: Parser = {
       // Pricing: the cacheWrite rate in the table is the 5m rate (1.25x input).
       // 1h-TTL writes are billed 2.0x input = 1.6x the 5m rate, so convert
       // them to "5m-equivalent" tokens for cost purposes when the split is known.
-      costUsd: model
-        ? costUsd(
-            model,
-            cw1h + cw5m > 0
-              ? { ...tokens, cacheWrite: Math.round(cw5m + 1.6 * cw1h) }
-              : tokens
-          )
-        : null,
+      costUsd: unknownCost ? null : totalCost,
       estimated: false,
       metricScope: 'own',
       turns,

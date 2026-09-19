@@ -4,6 +4,7 @@ import { codexParser } from './codex.js';
 import { copilotParser } from './copilot.js';
 import { copilotSubagentParser } from './copilotsubagent.js';
 import { copilotCliParser } from './copilotcli.js';
+import { copilotOtelParser, copilotCliOtelParser } from './copilototel.js';
 
 /**
  * Parser registry.
@@ -24,8 +25,10 @@ export const parsers: Parser[] = [
   claudeParser,
   codexParser,
   copilotParser,
+  copilotOtelParser,
   copilotSubagentParser,
   copilotCliParser,
+  copilotCliOtelParser,
 ];
 
 export function parserFor(tool: string): Parser | undefined {

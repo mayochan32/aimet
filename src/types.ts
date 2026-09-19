@@ -2,6 +2,9 @@
 
 export type Tool = 'claude' | 'codex' | 'copilot' | 'copilot-cli';
 
+/** How a model request was routed. Kept separate from provider and model id. */
+export type AccessMode = 'byok' | 'copilot' | 'mixed' | 'unknown';
+
 /** Evidence used to associate a session with a project. */
 export type ProjectSource =
   | 'unknown'
@@ -17,11 +20,12 @@ export type ProjectSource =
  * (rendered as `-`), as opposed to a measured 0.
  * Availability by tool:
  *   claude:           in/out/cacheR/cacheW measured, reasoning null
- *   codex:            in/out/cacheR/reasoning measured; GPT-5.6 cacheW measured
+ *   codex:            in/out/cacheR/reasoning measured; GPT-5.6/6 cacheW measured
  *                     when present (older rollouts/models use null)
  *   copilot (chat):   in/out measured, cacheR/cacheW/reasoning null
  *   copilot subagent: in/out/cacheR measured, cacheW/reasoning null
- *   copilot-cli:      out measured, everything else null
+ *   copilot-cli:      events.jsonl has output only; OTel can also provide input,
+ *                     cacheR/cacheW and exact root AI Credits
  */
 export interface TokenUsage {
   input: number | null;
@@ -43,6 +47,12 @@ export interface SessionMetrics {
   projectSource?: ProjectSource;
   /** primary model used in the session */
   model: string;
+  /** direct provider key (BYOK), Copilot entitlement, mixed, or not observable */
+  accessMode?: AccessMode;
+  /** LLM provider reported by the source telemetry (for example github/openai/anthropic) */
+  provider?: string;
+  /** API hostname reported by the source telemetry, when available */
+  serverAddress?: string | null;
   startedAt: string; // ISO 8601
   /** wall clock duration in seconds */
   durationSec: number;
@@ -74,6 +84,6 @@ export interface Parser {
   defaultDirs(): string[];
   /** glob-ish predicate for candidate log files */
   isLogFile(path: string): boolean;
-  /** parse a single session log file */
-  parseFile(path: string): Promise<SessionMetrics | null>;
+  /** Parse one source file. Container formats such as OTel SQLite may yield many sessions. */
+  parseFile(path: string): Promise<SessionMetrics | SessionMetrics[] | null>;
 }

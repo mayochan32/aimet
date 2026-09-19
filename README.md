@@ -2,7 +2,7 @@
 
 **Claude Code / Codex / GitHub Copilot のローカルセッションログから、AIエージェント開発にかかった時間・トークン数・API換算コストを採取するメトリクスツール。**
 
-チームの管理API（組織機能）を使わず、各ツールが手元に残すセッションログとローカル索引だけを情報源にします。計測値はJSONLから取得し、現行Copilotのプロジェクト特定に限ってローカルの`session-store.db`も参照します。採取したデータはプロジェクトマネジメントの数値データ（工数見積もり、案件別コスト配賦、モデル選定の判断材料など）として利用できます。
+チームの管理API（組織機能）を使わず、各ツールが手元に残すセッションログとローカル索引だけを情報源にします。計測値はJSONLまたはCopilotのローカルOpenTelemetry SQLiteから取得し、現行Copilotのプロジェクト特定には`session-store.db`も参照します。採取したデータはプロジェクトマネジメントの数値データ（工数見積もり、案件別コスト配賦、モデル選定の判断材料など）として利用できます。
 
 - 依存パッケージゼロ（Node.js 22.5+ の `node:sqlite` を使用）
 - データは `~/.aimet/metrics.db` （SQLite）に蓄積
@@ -15,9 +15,9 @@
 | Claude Code | `<Claude保存ルート>/projects/**/*.jsonl`（既定: `~/.claude`） | 実測（in / out / cacheR / cacheW、1h/5mキャッシュ内訳） | ✅ |
 | Claude Code サブエージェント | `<Claude保存ルート>/projects/<project>/<session-id>/subagents/agent-<agent-id>.jsonl` | 親と独立した実測（in / out / cacheR / cacheW） | ✅ |
 | Codex（CLI / IDE拡張 / ChatGPTデスクトップアプリのローカルCodex） | `<Codex保存ルート>/sessions/**/rollout-*.jsonl`（既定: `~/.codex`） | 実測（in / cached / out / reasoning）＋レート制限時系列 | ✅ |
-| GitHub Copilot (VS Code Chat) | `workspaceStorage/<hash>/chatSessions/*.jsonl` + `workspaceStorage`（旧）または `globalStorage`（現行）の `debug-logs/<uuid>/main.jsonl` | 実測（in / cached / out）＋消費AI Credits | ✅ |
+| GitHub Copilot (VS Code Chat / BYOK) | `globalStorage/github.copilot-chat/agent-traces.db`（OTel、推奨）＋従来のChat/debug JSONL | 実測（provider / in / cached / cacheW / out / reasoning）＋Copilot利用時の消費AI Credits | ✅ |
 | GitHub Copilot サブエージェント | `workspaceStorage/<hash>/GitHub.copilot-chat`（旧）または `globalStorage/github.copilot-chat`（現行）の `debug-logs/<親uuid>/*Subagent-*.jsonl` | 実測（in / cached / out / AI Credits、リクエスト単位） | ✅ |
-| GitHub Copilot CLI | `<Copilot CLI保存ルート>/session-state/<uuid>/events.jsonl`（既定: `~/.copilot`） | 実測（**出力トークンのみ**） | ✅ |
+| GitHub Copilot CLI | `<Copilot CLI保存ルート>/session-state/<uuid>/events.jsonl`（既定: `~/.copilot`）＋任意のOTel JSON Lines | イベントログは出力のみ。OTelでは入力・出力・キャッシュとAI Creditsを取得可能 | ✅ |
 
 ### Claude Code / Codexログの保存仕様と自動探索
 
@@ -161,11 +161,21 @@ aimetは以下の規則で取り込みます。
 
 > Copilot Chat（VS Code）のスナップショットは `User/workspaceStorage/`、デバッグログは従来版では同じ `workspaceStorage` 配下、現行版では `User/globalStorage/github.copilot-chat/` にあります。aimetはStable / Insiders / VSCodiumの新旧両方に加え、`VSCODE_PORTABLE`、`VSCODE_APPDATA`、Windowsの`APPDATA`、Linuxの`XDG_CONFIG_HOME`を自動探索に反映します。それ以外の非標準パスは `--dir` または `AIMET_COPILOT_DIR`（Windowsは `;`区切り、macOS/Linuxは `:`区切り）で指定できます。記録されるのは**Chat/エージェントモードの対話のみ**です。
 >
-> **Copilot CLI（`@github/copilot`）の注意**: レポート上は `copilot`（Chat版）と区別するため **`copilot-cli`** という別ツールとして集計します。CLIのログは**出力トークンしか記録しない**（入力・キャッシュのフィールドが存在しない）ため、`in` / `cacheR` / `cacheW` は **`-`（null）**、コストも **`-`（null）** になります。取得できるのは出力トークン・実行時間・ターン数・モデル・プロジェクトです。
+> **Copilot CLI（`@github/copilot`）の注意**: レポート上は `copilot`（Chat版）と区別するため **`copilot-cli`** として集計します。通常の`events.jsonl`だけでは出力トークンしか記録されず、入力・キャッシュ・コストは`-`です。CLIのOTel file exporterを有効にすると、`chat`スパンから入力・出力・キャッシュを、最上位`invoke_agent`スパンからAI Creditsを取得できます。
 
 ### Copilot CLIログの保存先と`COPILOT_HOME`
 
 Copilot CLIはセッションイベントを`<Copilot CLI保存ルート>/session-state/<session-id>/events.jsonl`に保存します。保存ルートは`COPILOT_HOME`が設定されていればその値、なければ`~/.copilot`です。aimetの`collect --tool copilot-cli`と`init copilot`も同じ解決規則を使います。相対パスの`COPILOT_HOME`はaimetのカレントディレクトリから絶対パス化します。
+
+CLIの完全なトークン情報とAI Creditsが必要なら、CLIの起動前に`COPILOT_OTEL_FILE_EXPORTER_PATH`を設定します。この変数の指定だけでCLIのOTelが有効になり、指定ファイルにJSON Linesで記録されます。aimet実行時にも同じ変数を渡すか、`AIMET_COPILOT_CLI_OTEL_FILE`または`--dir`でそのファイルを指定してください。OTelを後から有効にしても、記録済みの過去のターンの入力情報は復元できません。
+
+```bash
+export COPILOT_OTEL_FILE_EXPORTER_PATH=/absolute/path/copilot-cli-otel.jsonl
+copilot
+aimet collect --tool copilot-cli
+```
+
+OTelの1リクエストに対応する`chat`スパンを1回だけ数え、子エージェントのスパンは親traceに含めます。AI Creditsは最上位`invoke_agent`だけから数え、子の`chat`と二重加算しません。通常イベントログと同じセッションがある場合はOTelを優先します。元ファイルはプロンプト等を含み得るため、保存場所のアクセス権に注意してください。参照: [GitHub Copilot CLI OTel公式仕様](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference#opentelemetry-monitoring)。
 
 `~/.copilot/hooks/` はVS Code側のユーザーフック保存先でもあるため、`aimet init copilot`は標準位置の`~/.copilot/hooks/aimet.json`を必ず設定します。`COPILOT_HOME`が別ディレクトリを指す場合は、Copilot CLIも取りこぼさないよう`<COPILOT_HOME>/hooks/aimet.json`にも同じ`Stop`と`SubagentStop`フックを配置します。フックファイルには公式スキーマの`"version": 1`を付けます。
 
@@ -177,10 +187,60 @@ Copilotの`Stop`（互換名。CLI形式では`agentStop`）は親エージェ�
 
 VS Code Copilot Chatのローカルログは、VS Code／Copilot Chatのバージョンによって1か所ではなく、複数の場所に分かれて保存されます。さらに、同じ親セッションについて情報量の異なるログが複数存在する場合があります。aimetは保存場所ごとの数値を単純合算せず、次の探索・選択・親子集計規則を使います。
 
+#### BYOKとOpenTelemetry（推奨）
+
+VS CodeのBYOKはGitHubのUsage APIではなく、利用しているモデルプロバイダー側で課金・利用量を管理します。aimetはVS Code Copilot Chatがローカルへ出力するOpenTelemetry（OTel）を読み、BYOKのリクエストを集計します。OTelの`chat`スパンから次を取得します。
+
+- `gen_ai.provider.name`（`openai` / `anthropic` / `gemini` / `azure.ai.openai` / `github`など）
+- request / response model
+- input / output / cache read / cache creation（cacheW）/ reasoning token
+- `server.address`
+- Copilotホストモデルで記録されるnano-AIU（AI Credits）。BYOKではプロバイダーAPI換算コスト
+
+VS Code設定でローカルのスパンDBを有効にしてください。aimetの集計にはcontent captureは不要で、aimet自身はスパン属性の本文を取り込みません。ただしVS Code 1.136 / Copilot Chat 0.64.0では、`captureContent=false`でも`agent-traces.db`へプロンプトや回答が入る実挙動を確認しています。機密コードを扱う環境ではDBを機密データとして保護し、継続保存の可否を判断してください（[VS Code issue #326254](https://github.com/microsoft/vscode/issues/326254)）。
+
+```json
+{
+  "github.copilot.chat.otel.dbSpanExporter.enabled": true
+}
+```
+
+有効化後にVS Codeを再読み込みすると、各製品の`User/globalStorage/github.copilot-chat/agent-traces.db`へスパンが保存されます。`aimet collect --tool copilot`はStable / Insiders / VSCodiumの既定場所を自動探索します。DBはVS Code側で既定7日・直近100セッションに整理されるため、定期的に収集してください。一度aimetへ取り込んだ行は元DBの整理後も残ります。
+
+公式のfile exporterも読み取れます。任意パスを使う場合は、aimet実行時にも同じパスを指定します。
+
+```json
+{
+  "github.copilot.chat.otel.enabled": true,
+  "github.copilot.chat.otel.exporterType": "file",
+  "github.copilot.chat.otel.outfile": "/absolute/path/copilot-otel.jsonl"
+}
+```
+
+```bash
+AIMET_COPILOT_OTEL_FILE=/absolute/path/copilot-otel.jsonl aimet collect --tool copilot
+# または
+aimet collect --tool copilot --dir /absolute/path/copilot-otel.jsonl
+```
+
+同じセッションについて複数の情報源が見つかった場合は、`agent-traces.db` / OTel JSONLを従来のdebug logとChatスナップショットより優先します。OTelでは親とサブエージェントを含む接続済みtrace treeの`chat`スパンだけを1回ずつ合計し、`invoke_agent`の累計値は二重計上しません。
+
+`aimet report` / `sessions` / `session`の人間向け表示（Markdownを含む）では、対象にOTel以外のCopilotログがあると設定案内を表示します。これは「その行をOTelから取得できていない」という判断であり、VS CodeやCLIの**現在の設定値を直接読み取った判定ではありません**。すでにOTelを有効化していても、過去ログだけを集計する場合は表示されます。JSON出力には混ぜません。VS Code側は上記の`dbSpanExporter.enabled`、CLI側は`COPILOT_OTEL_FILE_EXPORTER_PATH`を設定します。
+
+VS Code 1.136では、OpenAI BYOKの`chat`スパンでも`gen_ai.provider.name=github`と記録される場合があります。aimetはその場合に限り`server.address`（例: `api.openai.com`）から直接接続先を判定します。また、タイトル生成や進捗文生成など会話IDを持たない内部`chat`スパンは利用者セッションへ数えません。
+
+aimetはモデルIDとは別に`access_mode`を保存します。`byok` / `copilot` / `mixed` / `unknown`の4値で、Copilot creditsの記録があれば`copilot`、GitHub以外のAPI endpointへの直接接続が確認できれば`byok`と判定します。providerは必ず取得できるわけではなく、カスタムendpointでは`custom`、根拠不足では`unknown`になります。そのためBYOK判定はprovider名だけに依存しません。
+
+人間向けの標準出力とMarkdownでは、BYOKと確認できた場合だけ`gpt-5 [BYOK/OpenAI]`のようにモデル名へ付記します。Copilot提供モデル、経路不明、Copilot以外のツールは通常のモデル名のままです。`access`・`provider`の独立列は表示しません。DBとJSONでは機械利用向けに`model`、`access_mode`、`provider`を分離して保持します。
+
+参照: [VS Code: Monitor agent usage with OpenTelemetry](https://code.visualstudio.com/docs/agents/guides/monitoring-agents)、[VS Code: AI language models / BYOK](https://code.visualstudio.com/docs/agent-customization/language-models)、[GitHub: Bring your own key for GitHub Copilot](https://docs.github.com/en/copilot/concepts/models/bring-your-own-key)
+
 #### ログの種類と保存場所
 
 | ログ | 主な保存場所 | 内容 | aimetでの扱い |
 |---|---|---|---|
+| OTelスパンDB（推奨） | `User/globalStorage/github.copilot-chat/agent-traces.db` | provider、モデル、全token区分、APIホスト、trace tree | 最優先。BYOKの正式な集計元 |
+| OTel file exporter | 利用者が`github.copilot.chat.otel.outfile`で指定 | OTelのJSON Lines | DBと同等の属性が記録された`chat`スパンを集計 |
 | Chatスナップショット | `User/workspaceStorage/<workspace-hash>/chatSessions/<session-id>.jsonl` | VS CodeのObjectMutationLog。Chat画面のセッションとリクエスト情報 | 対応。より詳細な同一IDの`main.jsonl`がなければ採用 |
 | 親のデバッグログ（従来版） | `User/workspaceStorage/<workspace-hash>/GitHub.copilot-chat/debug-logs/<parent-id>/main.jsonl` | 親自身のLLM呼び出しを記録したスパントレース | Chatスナップショットより優先 |
 | 子のデバッグログ（従来版） | 同じ`debug-logs/<parent-id>/runSubagent-*.jsonl` | 通常／カスタムサブエージェント自身のLLM呼び出し | 独立した子セッションとして保存 |
@@ -259,14 +319,16 @@ aimet collect --tool copilot
 
 #### 同じセッションを二重計上しない仕組み
 
-取り込み単位の主キーは`(tool, session_id)`です。Copilot Chatでは同じ親IDのChatスナップショットと`main.jsonl`が見つかる可能性があるため、次の順で情報源を選択します。
+取り込み単位の主キーは`(tool, session_id)`です。Copilot Chatでは同じ親IDのOTel・Chatスナップショット・`main.jsonl`が見つかる可能性があるため、次の順で情報源を選択します。
 
 ```text
-main.jsonl / 親がchild_session_refで参照する子JSONL（詳細なスパントレース）
+agent-traces.db / Copilot OTel JSONL（provider・全token区分を持つ標準スパン）
+  > main.jsonl / 親がchild_session_refで参照する子JSONL（詳細なデバッグスパン）
   > chatSessions/*.jsonl（タスクレベルのスナップショット）
   > その他
 ```
 
+- OTel行は接続されたtrace treeをすでに含む`metric_scope = tree`として保存し、同じ親に属する旧debug-logの子行を再加算しません。
 - 同じ親IDのChatスナップショットと`main.jsonl`は足しません。DBには情報量の多い`main.jsonl`由来の親1行だけを残します。
 - 親が`child_session_ref`で参照する子JSONLは、子自身のIDで別行にし、`parent_session_id`で親へリンクします。
 - 現行の親・子ログは、各セッションが自分自身のLLM呼び出しだけを持つため`metric_scope = own`です。親子合計では親1回＋各子1回だけを加算します。
@@ -292,7 +354,7 @@ main.jsonl / 親がchild_session_refで参照する子JSONL（詳細なスパン
 
 #### `globalStorage`ログのプロジェクト特定
 
-現行版の`main.jsonl`とサブエージェントJSONLは全ワークスペース共通の`globalStorage`に置かれ、ログ自身の`session_start`にworkspaceパスが含まれない場合があります。aimetは収集コマンドを実行したカレントディレクトリや、最後に開いていたVS Codeウィンドウをプロジェクトとして採用しません。それらは対象セッションと無関係な可能性があり、誤った案件へコストを配賦するためです。
+現行版の`agent-traces.db`、`main.jsonl`、サブエージェントJSONLは全ワークスペース共通の`globalStorage`に置かれ、ログ自身にworkspaceパスが含まれない場合があります。aimetは収集コマンドを実行したカレントディレクトリや、最後に開いていたVS Codeウィンドウをプロジェクトとして採用しません。それらは対象セッションと無関係な可能性があり、誤った案件へコストを配賦するためです。
 
 代わりに、次の優先順位でセッションごとにプロジェクトを決定します。
 
@@ -377,7 +439,7 @@ npm run test:e2e:copilot-windows
 - **Copilot（Chat）**: ObjectMutationLogの`Set` / `Push` / `Delete`を順番どおり復元できること。`main.jsonl`と`child_session_ref`で参照された各子JSONLはスパンIDで重複排除し、親子のトークンとnano-AIUが生ログの値に一致すること。
 - **Copilot（親子集計）**: `main.jsonl` を同じIDの `chatSessions` より優先し、親と子を各1回だけ加算すること。実ログから匿名化したgolden fixtureで **22.0478895 AI Credits** と正確なトークン数を固定値照合すること。
 - **Copilot（プロジェクト特定）**: 現行`globalStorage`ログを同じセッションIDの`session-store.db.sessions.cwd`へ結び付けること。自由記述中のパスを帰属根拠にせず、より確実な`project_source`へ更新しても`main.jsonl`の数値を保ち、サブエージェントが親のプロジェクトを継承すること。
-- **Copilot CLI**: 出力トークンを合計しターン数を数える一方、**入力トークンは未計測（`null`）**、コストも算出不可の **`null`** になること。壊れた行は無視すること。
+- **Copilot CLI**: 従来イベントログでは出力のみ、入力・コストは`null`。OTelでは親子の`chat`を1回ずつ集計し、AI Creditsを最上位`invoke_agent`からのみ数えること。壊れた行は無視すること。
 
 **`test/store.test.js` — 保存と冪等性**
 
@@ -490,7 +552,7 @@ aimet <command> [options]
 
 ```console
 $ aimet --version
-2.2.1
+2.3.0
 ```
 
 実行中のaimetと同じ配布パッケージの`package.json`からバージョンを表示します。複数PCや複数ユーザーで調査する場合は、不具合報告にこの出力を含めてください。
@@ -529,15 +591,15 @@ DB内のセッションを期間バケットで集計して表示する。
 | オプション | 説明 |
 |---|---|
 | `--period <daily\|weekly\|monthly>` | 集計単位（デフォルト: daily）。ローカル日付基準 |
-| `--by <tool\|project\|model>` | 指定軸で行を分割し横断比較する。`model`指定時は同名モデルをツール横断で混ぜず、`tool`と`model`の組み合わせごとに分割する |
+| `--by <tool\|project\|model>` | 指定軸で行を分割し横断比較する。`model`指定時はBYOKとCopilot提供分を内部的に分割し、BYOKだけモデル名に接尾辞を付ける |
 | `--tool <tool>` | 指定ツールのセッションのみ集計する（`--by` と併用可）。標準出力・JSON・Markdownには`tool`列も出力する |
-| `--model <model>` | モデルIDの完全一致でセッションを絞り込む（`--tool`、`--by`と併用可）。同名モデルをツール横断で混ぜず、`tool`と`model`を出力する |
+| `--model <model>` | モデルIDの完全一致でセッションを絞り込む（`--tool`、`--by`と併用可）。標準出力では`tool + model`を表示する |
 | `--since <days>` | 直近N日のセッションのみ集計する |
 | `--start <時刻>` / `--end <時刻>` | セッション開始時刻（started_at）がこの範囲のものだけ集計する。**ローカル時刻**の `YYYYMMDDhhmmss` 形式。短縮形可：`20260707` は日全体、`2026070709` は9時台を指す（startは期間の頭、endは期間の末尾に自動補完）。`2026-07-07 09:00:00` のような区切り文字入りも受け付ける |
 | `--json` | 生値（未丸め）のJSONで出力する。BI・スプレッドシート連携用 |
 | `--md <file>` | Markdownの表としてファイルに書き出す |
 
-`--by model`または`--model`を指定した標準出力・JSON・Markdownには、`model`だけでなく`tool`も必ず含まれます。同じモデル名でも、Claude Code / CodexはAPI換算USD、GitHub Copilot Chatは実測AI Creditsを優先するなど、利用ツールによってコストの意味と計算規則が異なるためです。たとえばCopilot経由のClaudeモデルとClaude Codeで直接使った同名モデルは別行として集計されます。また、`--tool`で1ツールへ絞った場合も、出力の意味を明示するため`tool`列を省略しません。`--tool codex --by project`なら`tool + project`、`--model gpt-5.6-luna`なら`tool + model`、両方を指定しても重複のない列が出力されます。空白や括弧を含むモデルIDは、シェルで`--model "モデルID"`のように引用してください。
+`--by model`と`--model`は、表示上は`tool + model`だけです。ただし内部ではアクセス経路とproviderもグループキーに含めるため、同じ`gpt-5`でもCopilot提供分と`gpt-5 [BYOK/OpenAI]`は別行になります。JSONには`access_mode`と`provider`も含まれます。空白や括弧を含むモデルIDは、シェルで`--model "モデルID"`のように引用してください。
 
 ---
 
@@ -676,14 +738,17 @@ aimet init <claude|codex|copilot> [--dry-run]
 | `VSCODE_APPDATA` | VS Code全体のユーザーデータ基点。`VSCODE_PORTABLE`未設定時にCopilot探索へ反映 |
 | `APPDATA` / `XDG_CONFIG_HOME` | Windows / LinuxのVS Code標準ユーザーデータ基点。上記2変数の未設定時に使用 |
 | `AIMET_COPILOT_DIR` | Copilotの追加探索ルート。Windowsは`;`、macOS / Linuxは`:`区切り。`--user-data-dir`使用時の明示指定に利用 |
+| `AIMET_COPILOT_OTEL_FILE` | Copilot OTel file exporterのJSONLファイルを明示指定。標準外のファイル名・保存場所に利用 |
+| `COPILOT_OTEL_FILE_EXPORTER_PATH` | Copilot CLIを起動する前に設定するOTel出力先。CLIのOTelを有効化し、aimetも同じファイルを自動探索 |
+| `AIMET_COPILOT_CLI_OTEL_FILE` | Copilot CLIのOTel JSONLをaimet側だけで指定する場合の出力先 |
 
 ## 3種類のレポートの見方
 
 ### レベル1: `aimet report` — 期間集計（PM向けサマリ)
 
 ```
-| period     | start                     | last                      | tool   | sessions | turns | active | wall   | input | output | cacheR | cacheW | cost($) |
-| 2026-07-04 | 2026-07-04 17:11:32 (+09:00) | 2026-07-05 08:10:05 (+09:00) | codex | 1 | 24 | 2.12h | 14.98h | 2.15M | 158.2k | 26.05M | 0 | 7.52 |
+| period     | start                     | last                      | tool   | sessions | turns | active | wall   | input | output | cacheR | cacheW | reasoning | cost($) |
+| 2026-07-04 | 2026-07-04 17:11:32 (+09:00) | 2026-07-05 08:10:05 (+09:00) | codex | 1 | 24 | 2.12h | 14.98h | 2.15M | 158.2k | 26.05M | 0 | - | 7.52 |
 ```
 
 | 項目 | 意味 |
@@ -698,7 +763,8 @@ aimet init <claude|codex|copilot> [--dry-run]
 | output | 出力トークン（Codexはreasoning分を含む） |
 | cacheR | キャッシュ読み取りトークン（プロンプトキャッシュのヒット量） |
 | cacheW | キャッシュ書き込みトークン（Claude、およびログに記録されたGPT-5.6系Codex） |
-| cost($) | ツール別のコストUSD。Claude/CodexはAPI換算、Copilotの`actual`はAI Credits × $0.01、Copilot CLIは取得不可。`*`付きは推定値を含む |
+| reasoning | 出力のうちreasoningに使われたトークン。ログに内訳がなければ`-` |
+| cost($) | ツール別のコストUSD。Claude/CodexはAPI換算、Copilotの`actual`はAI Credits × $0.01。CLIはOTelにAI Creditsまたは完全なトークン数があれば算出でき、従来のイベントログだけなら`-`。`*`付きは推定値を含む |
 
 読み方のヒント: `active/wall` の比が低いほど「AIに任せて放置できた」ことを意味します。`cacheR` が大きいほどコンテキスト再利用が効いています。`cost/turns` で1タスクあたり単価が出せます。
 
@@ -725,7 +791,7 @@ aimet init <claude|codex|copilot> [--dry-run]
 | 項目 | 意味 |
 |---|---|
 | project | 作業ディレクトリ（案件の識別子として使える） |
-| model | 使用モデル名 |
+| model | 使用モデル名。BYOKと確認できた場合だけ`[BYOK/provider]`を付記 |
 | reasoning | 推論トークン（Codexのみ。outputの内数） |
 | log file | 元ログファイルのパス（detailで深掘りする際の入口） |
 
@@ -829,7 +895,7 @@ AIエージェントはAPIリクエストのたびに**会話履歴・システ�
 | キャッシュ書き込み（1時間TTL） | **2.0倍** | — |
 | キャッシュ読み取り | **0.1倍**（90%割引） | 対応モデルは**0.1倍**（90%割引）。Pro系など例外あり |
 
-Anthropicは明示的にキャッシュポイントを指定する方式で、TTL（保持時間）5分か1時間を選べます。書き込みが割高な代わりに、5分TTLなら**1回ヒットした時点で元が取れます**（1.25 + 0.1 < 1.0 + 1.0）。1時間TTLでも2回ヒットで黒字化します。OpenAIの従来モデルは自動プレフィックスキャッシュの読み取り分を割引し、書き込みを独立した課金項目として扱いません。一方、GPT-5.6系は公式モデルガイドに明示的キャッシュ書き込みが定義され、aimetはCodex rolloutの`cache_write_input_tokens`をcacheWとして分離し、1.25倍で計算します。読み取り割引やキャッシュ書き込みの有無はモデルごとに異なるため、最新条件は[OpenAI公式モデル一覧](https://developers.openai.com/api/docs/models)と[GPT-5.6公式モデルガイド](https://developers.openai.com/api/docs/guides/latest-model)で確認してください。
+Anthropicは明示的にキャッシュポイントを指定する方式で、TTL（保持時間）5分か1時間を選べます。書き込みが割高な代わりに、5分TTLなら**1回ヒットした時点で元が取れます**（1.25 + 0.1 < 1.0 + 1.0）。1時間TTLでも2回ヒットで黒字化します。OpenAIの従来モデルは自動プレフィックスキャッシュの読み取り分を割引し、書き込みを独立した課金項目として扱いません。一方、GPT-5.6系とGPT-6 Astraでは明示的キャッシュ書き込みが定義され、aimetはCodex rolloutの`cache_write_input_tokens`をcacheWとして分離し、1.25倍で計算します。読み取り割引やキャッシュ書き込みの有無はモデルごとに異なるため、最新条件は[OpenAI公式モデル一覧](https://developers.openai.com/api/docs/models)と[最新モデルガイド](https://developers.openai.com/api/docs/guides/latest-model)で確認してください。
 
 ### 実データでの効果
 
@@ -862,15 +928,16 @@ Anthropicは明示的にキャッシュポイントを指定する方式で、TT
 
 | 取得項目 | Claude Code | Codex | Copilot Chat | Copilot サブエージェント | Copilot CLI |
 |---|---|---|---|---|---|
-| 入力トークン（非キャッシュ） | ✅ 実測 | ✅ 実測 | ✅ 実測（`main.jsonl`） | ✅ 実測 | − |
+| 入力トークン（非キャッシュ） | ✅ 実測 | ✅ 実測 | ✅ 実測（OTel / `main.jsonl`） | ✅ 実測 | OTelなら✅、従来イベントログは− |
 | 出力トークン | ✅ 実測 | ✅ 実測 | ✅ 実測 | ✅ 実測 | ✅ 実測 |
-| キャッシュ読取（cacheR） | ✅ 実測 | ✅ 実測 | ✅ 実測（`main.jsonl`） | ✅ 実測 | − |
-| キャッシュ書込（cacheW） | ✅ 実測（1h/5m TTL内訳付き） | GPT-5.6系は✅実測（フィールドのない旧rollout・旧モデルは−） | − | − | − |
-| 推論トークン（reasoning） | − | ✅ 実測 | − | − | − |
-| 実際の消費額 | − | − | ✅ AI Credits実測 | ✅ AI Credits実測 | − |
+| キャッシュ読取（cacheR） | ✅ 実測 | ✅ 実測 | ✅ 実測（`main.jsonl`） | ✅ 実測 | OTelなら✅、従来イベントログは− |
+| キャッシュ書込（cacheW） | ✅ 実測（1h/5m TTL内訳付き） | GPT-5.6/6系は✅実測（フィールドのない旧rollout・旧モデルは−） | OTelは✅、debug JSONLは− | OTelは✅、debug JSONLは− | OTelなら✅、従来イベントログは− |
+| 推論トークン（reasoning） | − | ✅ 実測 | OTelは✅、debug JSONLは− | OTelは✅、debug JSONLは− | OTelで属性があれば✅、なければ− |
+| 実際の消費額 | − | − | ✅ AI Credits実測 | ✅ AI Credits実測 | OTelの最上位スパンにAI Creditsがあれば✅ |
 | モデル名 | ✅ | ✅ | ✅（resolvedModel） | ✅ | ✅ |
+| プロバイダー | Anthropic固定 | OpenAI系 | OTelは✅、従来ログはunknown | OTelは✅、従来ログはunknown | ログ依存 |
 | 時間（wall / active） | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 親子リンク | ✅（公式パスのsessionId / agentId） | ✅ | ✅ | ✅ | − |
+| 親子リンク | ✅（公式パスのsessionId / agentId） | ✅ | ✅ | ✅ | OTelでは接続済みtrace treeとして集計 |
 | 補足情報 | service_tier、サーバーツール使用回数 | レート制限使用率の時系列、effort | ttft、ツールラウンド数 | ttft、スパン構造 | ターン・ツールイベント |
 
 「−」はそのツールのログに記録が存在しないことを意味します（aimetの表示も `-`）。
@@ -899,11 +966,12 @@ cost = ( input × 入力単価
 
 ### 内蔵単価で対応しているモデル
 
-以下は**v2.2.1、2026-08-27確認時点**の`src/pricing.ts`と一致する一覧です。金額はすべて1MトークンあたりUSDで、cacheWはClaudeでは5分TTLの書き込み単価です。Claudeの1時間TTLはログの内訳を使って表のcacheWの1.6倍で計算します。同じ行に複数のIDがある場合は同一単価です。
+以下は**2026-09-20に公式情報を照合した**`src/pricing.ts`の主な内蔵単価です。金額はすべて1MトークンあたりUSDで、cacheWはClaudeでは5分TTLの書き込み単価です。Claudeの1時間TTLはログの内訳を使って表のcacheWの1.6倍で計算します。同じ行に複数のIDがある場合は同一単価です。
 
 | 提供元 | モデル | 対応するモデルID | input | output | cacheR | cacheW | 条件・備考 |
 |---|---|---|---:|---:|---:|---:|---|
 | Anthropic | Claude Fable 5 | `claude-fable-5` | 10 | 50 | 1 | 12.5 | 5分cacheW。1時間は20 |
+| Anthropic | Claude Fable / Mythos 5.1 | `claude-fable-5-1` / `claude-mythos-5-1`（ドット表記も対応） | 10 | 50 | 0.25 | 12.5 | 5分cacheW。1時間は20 |
 | Anthropic | Claude Mythos 5 | `claude-mythos-5` | 10 | 50 | 1 | 12.5 | 5分cacheW。1時間は20 |
 | Anthropic | Claude Opus 5 | `claude-opus-5` | 5 | 25 | 0.5 | 6.25 | 5分cacheW。1時間は10 |
 | Anthropic | Claude Sonnet 5 | `claude-sonnet-5` | 2 | 10 | 0.2 | 2.5 | 5分cacheW。1時間は4 |
@@ -913,6 +981,7 @@ cost = ( input × 入力単価
 | Anthropic | Claude Sonnet 4 | `claude-sonnet-4` | 3 | 15 | 0.3 | 3.75 | 5分cacheW。1時間は6 |
 | Anthropic | Claude Haiku 4 / 4.5 | `claude-haiku-4` / `claude-haiku-4-5` | 1 | 5 | 0.1 | 1.25 | Copilotの`claude-haiku-4.5`にも対応。1時間cacheWは2 |
 | Anthropic | Claude 3.5 Haiku | `claude-3-5-haiku` | 0.8 | 4 | 0.08 | 1 | 5分cacheW。1時間は1.6 |
+| OpenAI | GPT-6 Astra | `gpt-6-astra` | 10 | 50 | 1 | 12.5 | 272K超の入力で入力2倍・出力1.5倍 |
 | OpenAI | GPT-5.6 Cyber | `gpt-5.6-cyber` | 12.5 | 75 | 1.25 | 15.625 | 272K超の入力で入力2倍・出力1.5倍 |
 | OpenAI | GPT-5.6 Sol | `gpt-5.6-sol` / `gpt-5.6` | 4 | 20 | 0.4 | 5 | `gpt-5.6`はSolの別名。272K超料金あり |
 | OpenAI | GPT-5.6 Terra | `gpt-5.6-terra` | 2 | 12 | 0.2 | 2.5 | 272K超料金あり |
@@ -930,27 +999,30 @@ cost = ( input × 入力単価
 | OpenAI | GPT-5.1-Codex mini | `gpt-5.1-codex-mini` | 0.25 | 2 | 0.025 | 0 | 非推奨モデル。既存・過去ログを正しく計算するため明示対応 |
 | OpenAI | GPT-5 / GPT-5-Codex | `gpt-5` / `gpt-5-codex` | 1.25 | 10 | 0.125 | 0 | モデル名のない旧Codexログは`gpt-5-codex`へ推定フォールバック |
 | OpenAI | GPT-5 mini | `gpt-5-mini` | 0.25 | 2 | 0.025 | 0 | — |
+| OpenAI | GPT-5 nano | `gpt-5-nano` / 日付付きsnapshot | 0.05 | 0.4 | 0.005 | 0 | 例: `gpt-5-nano-2025-08-07` |
 | OpenAI | o4-mini | `o4-mini` | 1.1 | 4.4 | 0.275 | 0 | — |
 
-内蔵IDは完全一致または`-YYYYMMDD`形式の日付付きsnapshotに対応します。表にない新しいモデルは、名前が似ていても旧モデルの単価を流用せずコストを`-`にします。GitHub Copilot Chat／サブエージェントは表にある`resolvedModel`をAI Credits欠損時のAPI換算に利用しますが、AI Creditsが記録されている場合はモデルにかかわらずGitHubの実消費額を優先します。料金は公開後にも変更され得るため、この一覧は自動更新の保証ではありません。
+内蔵IDは完全一致または`-YYYYMMDD`形式の日付付きsnapshotに対応します。表にない新しいモデルは、名前が似ていても旧モデルの単価を流用せずコストを`-`にします。Copilot提供モデルのAI Credits欠損時は、GitHubの[モデル別トークン料金](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing)に基づく別の単価表を利用します（OpenAI/AnthropicのBYOK単価表とは分離）。対象にはGPT-6 Astra、GPT-5.6系、Claude 5系（Opus 4.8 fast modeを含む）、Gemini 3.5～3.8 Flash、Grok 4.5/4.6、MAI Code 1.1 Flash、Kimi K2.7/K3および過去ログ用の一部旧モデルを含みます。GitHubのGemini 3.6～3.8 Flash単価は2026年末までのプロモーション価格です。AI Creditsが記録されている場合は単価にかかわらず実測クレジットを優先します。料金は変更され得るため、自動更新の保証ではありません。参照: [OpenAIのモデル料金](https://developers.openai.com/api/docs/models)、[Anthropic料金](https://platform.claude.com/docs/en/about-claude/pricing)。
 
 ### ツールごとのコスト計算方法
 
 **Claude Code — 完全内訳による正確なAPI換算**。APIリクエストごとの実測usageをmessageIdで重複排除して合算します。`input_tokens`はキャッシュ分を含まない生の値なのでそのまま使用でき、cacheR（0.1倍）・cacheW（割増）を含む**4項目すべてを常に実測**できます。キャッシュ書き込みはTTLで単価が違うため（5分=1.25倍、1時間=2.0倍）、ログの`cache_creation`内訳から**TTL別に正しく計算**します（単価表のcacheW列は5分TTLの単価。1時間TTL分は内部で1.6倍換算）。親とサブエージェントは公式の`sessionId + agentId`で別セッションとして識別し、それぞれの独立したusageを1回だけ合算します。Anthropicの課金体系をログから完全に再現できるため、API換算値としての精度は最も高くなります。
 
-**Codex — 累積台帳とリクエスト単位の課金を分けて計算**。`token_count`イベントの`total_token_usage`は累積値なので最大値をセッショントークンとして使用し、コストは累積が増えた時の`last_token_usage`をリクエスト単位で検算して合計します。(1) `input_tokens`は`cached_input_tokens`と`cache_write_input_tokens`を含むため、両方を差し引いて非キャッシュ入力、cacheR、cacheWの相互排他的な3区分へ分けます。(2) `reasoning_output_tokens`は`output_tokens`の内数なのでコストへ再加算しません。(3) GPT-5.6は[OpenAI公式モデルガイド](https://developers.openai.com/api/docs/guides/latest-model)に従い、明示的なcacheWを非キャッシュ入力単価の1.25倍で計算します。(4) GPT-5.4 / 5.5 / 5.6系は、1リクエストの入力が272Kを超える場合、そのリクエスト全体へ入力2倍・出力1.5倍を適用します。古いrolloutにリクエスト内訳または課金対象のcacheWがなければ、基準単価で計算して`estimated`を立てます。モデル名自体がない形式は従来どおり`gpt-5-codex`へフォールバックします。サブエージェントは別rolloutの独立台帳なので、親子を各1回だけ合算します。
+**Codex — 累積台帳とリクエスト単位の課金を分けて計算**。`token_count`イベントの`total_token_usage`は累積値なので最大値をセッショントークンとして使用し、コストは累積が増えた時の`last_token_usage`をリクエスト単位で検算して、その時点のモデル単価で合計します。(1) `input_tokens`は`cached_input_tokens`と`cache_write_input_tokens`を含むため、両方を差し引いて非キャッシュ入力、cacheR、cacheWの相互排他的な3区分へ分けます。(2) `reasoning_output_tokens`は`output_tokens`の内数なのでコストへ再加算しません。(3) GPT-5.6系とGPT-6 Astraは明示的なcacheWを非キャッシュ入力単価の1.25倍で計算します。(4) 長文料金のあるモデルは、1リクエストの入力が閾値を超える場合、そのリクエスト全体に入力・出力倍率を適用します。古いrolloutにリクエスト内訳または課金対象のcacheWがなければ、単一モデルの場合は基準単価の推定とし、複数モデルなら誤配分を避けるため`-`にします。モデル名自体がない形式は従来どおり`gpt-5-codex`へフォールバックします。サブエージェントは別rolloutの独立台帳なので、親子を各1回だけ合算します。
 
 **Copilotクレジット（AI Credits）とは**。GitHub Copilotの課金単位で、**1クレジット = $0.01の固定レート**です。2026年6月に従来のプレミアムリクエスト（PRU）制から移行した従量課金モデルで、プランに含まれる月間クレジット枠を消費し、超過分は追加課金されます。重要なのは、**消費クレジット数はモデルや処理量によって変動する**（高価なモデルほど1リクエストあたりの消費が大きい）ため、トークン数から外部で正確に再計算することはできない、という点です。幸いVS CodeのCopilot Chatはリクエストごとの実消費（`copilotCredits`）をログに記録するので、aimetはこれをそのまま採用します — つまりCopilot Chatのcostは推定ではなく**GitHubが実際に差し引いた金額**です。キャッシュの効きやモデルの内部事情もすべて織り込み済みの値なので、キャッシュ内訳（cacheR/cacheW）がログに無くてもコストの正確性には影響しません。GitHub側の単位・開始時期・従量課金の説明は[組織・Enterprise向けAI Creditsの公式説明](https://docs.github.com/en/copilot/concepts/billing/usage-based-billing-for-organizations-and-enterprises)と[Copilotのモデル別課金リファレンス](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing)を参照してください。
 
 **GitHub Copilot Chat — 実測AI Credits優先、API換算はリクエスト単位のフォールバック**。`main.jsonl` の各LLMスパンにある `copilotUsageNanoAiu` / `aiu` を合計し、AI Creditsを $0.01/クレジットで表示します。`main.jsonl` がない場合は `chatSessions` の `copilotCredits` とトークンを使います。AI Creditsが欠損したリクエストだけ、実測トークン×resolvedModel単価でAPI換算し、全件実測は `actual`、一部フォールバックは `mixed`、全件フォールバックは `estimated` と区別します。
 
+**GitHub Copilot BYOK — OTel実測tokenをプロバイダー単価で換算**。Local BYOKはGitHub Copilotの課金経路を通らないため、GitHubのAI Creditsを実費として扱いません。OTel `chat`スパンのprovider・model・input / cacheR / cacheW / output / reasoningをリクエスト単位で読み、`~/.aimet/pricing.json`を含むモデル単価表でAPI換算します。これはプロバイダー請求書そのものではないため`estimated`表示です。単価未登録モデル、サーバーツール料金、バッチ・リージョン・優先処理などの追加条件がある場合はコストを確定できませんが、記録されたtoken数は集計できます。
+
 **Copilotサブエージェント — トークンとAI Creditsをリクエスト単位で実測**。親の`child_session_ref`で参照された子JSONL（`runSubagent-*`、`searchSubagent-*`など）のLLMスパンからin / cached / outとnano-AIUを取得します。同じ`spanId`は1回だけ数え、親は`main.jsonl`の自分のスパン、子は各子JSONLの自分のスパンだけを持つため、親子合計で二重計上しません。AI Credits欠損時のみ、Chatと同じルールでそのリクエストをAPI換算します。
 
-**Copilot CLI — コストは出さない（n/a）**。ログに出力トークンしか記録されず、コストの大半を占める入力トークンが不明です。出力だけで計算した金額は大幅な過小評価になるため、aimetは**誠実にコストをnull（表示 `-`、セッション詳細では `n/a`）**とし、0円として合算に紛れ込ませません。取得できる出力トークン・時間・ターン数は工数指標として利用できます。
+**Copilot CLI — OTelの有無で取得範囲が変わる**。従来の`events.jsonl`には出力トークンしかないため、入力が不明な行のコストは`null`（表示`-`）にします。OTelでは`chat`のトークン区分を集計し、最上位`invoke_agent`の`github.copilot.nano_aiu`があれば実測AI Creditsを優先します。子のスパンにも同じ値があるため、子側の値は足しません。Creditsが欠けていて完全なトークンと登録済みモデル単価がある場合だけ、API換算の推定値にします。
 
 ### 精度に関する注意
 
-- **Copilotの`main.jsonl`と参照された子JSONLがある場合、キャッシュ読取内訳とAI Creditsをともに実測できます**。debug-logsがないChatセッションは`chatSessions`に記録された粒度に制限されます。AI Creditsがある行はGitHubの実消費を使うため、aimetのAPI単価表が新モデルへ未対応でも実費値には影響しません。
+- **Copilot OTelが有効なら、BYOKを含むprovider・cacheW・reasoningまで（属性がある限り）実測できます**。OTelがない場合、`main.jsonl`と参照された子JSONLからキャッシュ読取とAI Creditsを実測しますが、cacheWとproviderは復元できません。debug-logsもないChatセッションは`chatSessions`に記録された粒度に制限されます。Copilot CLIの従来イベントログはさらに入力が取れません。
 - 単価表が古いとClaude / CodexのAPI換算値とCopilotのAI Credits欠損時フォールバックがずれます。重要な集計の前だけでなく、**すべての修正・リリース時**に[Anthropic](https://platform.claude.com/docs/en/about-claude/pricing)・[OpenAIモデル一覧](https://developers.openai.com/api/docs/models)・[OpenAI料金](https://openai.com/api/pricing/)の最新内容と`src/pricing.ts`を照合してください。単純な単価差だけなら`~/.aimet/pricing.json`で上書きできますが、新しい課金項目や条件付き倍率は本体対応が必要です。
 - バッチ割引、優先スループット課金、サーバーツール（Web検索等）の従量課金は含みません
 - Codexの累積トークンはセッション途中のコンテキスト圧縮（compaction）後も引き継がれる前提です。異常に大きい値が出た場合は `aimet detail` の `tokenTimeline` で推移を確認してください
@@ -959,8 +1031,8 @@ cost = ( input × 入力単価
 
 現行のaimetスキーマは1セッションを1行で保存し、`model`も1値だけ持ちます。セッション中にモデルを変更した場合、モデルごとのトークン台帳に分割しては保存しません。そのため次の制限があります。
 
-- `aimet report --by model`はツールとモデルの組み合わせごとに行を分けますが、セッション全体を最後に観測したモデルの行へ帰属させるため、1セッション内のモデル別の正確な配分にはなりません。
-- Claude CodeとCodexのAPI換算コストは、セッション合計トークンに1つのモデル単価を適用するため、途中で単価の異なるモデルへ変更したセッションのコストは正確ではありません。
+- `aimet report --by model`はツール・アクセス経路・provider・モデルの組み合わせごとに行を分けますが、セッション全体を1行へ帰属させるため、1セッション内のモデル別の正確な配分にはなりません。access/provider/modelが複数の場合は`mixed`へまとめます。
+- Claude Codeは各assistant messageのモデル、Codexは検算済み`last_token_usage`の時点のモデルでリクエスト単位にAPI換算します。Claudeの`usage.iterations`に`advisor_message`があれば、executorの上位usageに含まれないadvisor分をそのモデルの単価で追加します。モデル混在時のセッション表示は`mixed`とし、単一モデルへの誤帰属を避けます。Codexのリクエスト差分が欠け、複数モデルを使った場合はコストを`-`とします。
 - Copilotの実測AI Creditsはリクエストごとの消費を合計するため金額合計自体は保てますが、`--by model`のモデル別帰属は同様に正確ではありません。モデル単価へフォールバックした推定分はリクエスト単位で計算します。
 
 監査時は`aimet detail`のClaude `requests[].model`、Codex `turnContexts[].model`、Copilot `requests[]`を確認してください。正確なモデル別集計が必要な運用では、モデルを変える前にセッションを終了し、新しいセッションを開始してください。モデル切替点ごとのトークン・コスト分割は今後の対応課題です。
@@ -976,8 +1048,8 @@ cost = ( input × 入力単価
 
 ## 設計メモ
 
-- **冪等性**: `(tool, session_id)` を主キーに、最終イベント時刻とログの情報量で更新を判定します。Copilotの同じ親IDは `main.jsonl` > `chatSessions` の固定優先順位とし、取り込み順や時刻に左右されません。
-- **Copilotの集計範囲**: スパントレース由来の親子は `own`（自分のLLM呼び出しのみ）として保存します。過去形式の親が `tree`（子を含む累計）の場合は、集計時に子を再加算しません。report / session / Markdownはすべて同じ共通ロールアップを使います。
+- **冪等性**: `(tool, session_id)` を主キーに、最終イベント時刻とログの情報量で更新を判定します。Copilotの同じ親IDは `OTel > main.jsonl > chatSessions` の固定優先順位とし、取り込み順や時刻に左右されません。
+- **Copilotの集計範囲**: debugスパントレース由来の親子は `own`（自分のLLM呼び出しのみ）、接続済みtrace treeを集計するOTelは`tree`として保存します。`tree`の親がある場合は子を再加算しません。report / session / Markdownはすべて同じ共通ロールアップを使います。
 - **Codexのトークン**: `token_count` は累積値のため最大値を採用。`input_tokens` は `cached_input_tokens` を含むため、共通スキーマでは差し引いて「非キャッシュ入力」として記録します。
 - **Codexのマルチエージェント**: サブエージェントは別のrolloutファイルになり、ファイル内のすべての`session_meta`を読んだ後に識別を決定します。rolloutファイル名のUUIDと自スレッドIDの一致を検証し、`session_meta.thread_source: "subagent"`または`source.subagent`で子候補を判別します。自スレッドのキーは`payload.id`とし、現行形式では`payload.parent_thread_id`、旧形式では自IDと異なる`payload.session_id`を親として`parent_session_id`へ保存します。出現順序には依存せず、矛盾する候補は誤って合算せず収集エラーにします。トークン台帳はスレッドごとに独立しているため、親1回＋子ごと1回を加算します。詳細は「Codexの`session_meta`重複とサブエージェント識別の注意」を参照してください。参照: [OpenAI公式ソースのrollout ThreadItem](https://github.com/openai/codex/blob/main/codex-rs/rollout/src/list.rs)、[OpenAI公式ソースのサブエージェント作成](https://github.com/openai/codex/blob/main/codex-rs/core/src/codex_delegate.rs)、[OpenAI: Codex Subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents)
 - **Claude Codeのサブエージェント**: 公式配置`<session-id>/subagents/agent-<agent-id>.jsonl`から親IDと子IDを取得し、子を`<parent-session-id>/agent-<agent-id>`の一意なDB行として親へリンクします。親・子とも`own`スコープなので、グループ集計は各トランスクリプトを1回だけ加算します。
@@ -996,14 +1068,14 @@ $ aimet collect
 scanned 23 files: +6 new, ~1 updated, 16 unchanged, 0 errors
 
 $ aimet report --by tool
-    period                         start                          last     tool  sess  turns  active    wall      in     out  cacheR  cacheW  cost($)
-----------  ----------------------------  ----------------------------  -------  ----  -----  ------  ------  ------  ------  ------  ------  -------
-2026-07-07  2026-07-07 05:47:57 (+09:00)  2026-07-07 07:57:18 (+09:00)    codex     2     32   1.47h   2.19h   1.07M   99.6k  20.54M       -     4.85
-2026-07-07  2026-07-07 06:36:59 (+09:00)  2026-07-07 06:40:19 (+09:00)  copilot     5      5   0.00h   0.06h  135.6k   23.8k  505.3k       -     0.22
-2026-07-05  2026-07-05 11:53:20 (+09:00)  2026-07-05 11:54:18 (+09:00)  copilot     1      1   0.01h   0.02h   31.3k    1.6k       -       -     0.06
-2026-06-19  2026-06-19 18:21:03 (+09:00)  2026-06-19 18:54:04 (+09:00)   claude     1     13   0.26h   0.55h      29    3.9k  292.8k   17.4k     0.25
+    period                         start                          last     tool  sess  turns  active    wall      in     out  cacheR  cacheW  reason  cost($)
+----------  ----------------------------  ----------------------------  -------  ----  -----  ------  ------  ------  ------  ------  ------  ------  -------
+2026-07-07  2026-07-07 05:47:57 (+09:00)  2026-07-07 07:57:18 (+09:00)    codex     2     32   1.47h   2.19h   1.07M   99.6k  20.54M       -       -     4.85
+2026-07-07  2026-07-07 06:36:59 (+09:00)  2026-07-07 06:40:19 (+09:00)  copilot     5      5   0.00h   0.06h  135.6k   23.8k  505.3k       -       -     0.22
+2026-07-05  2026-07-05 11:53:20 (+09:00)  2026-07-05 11:54:18 (+09:00)  copilot     1      1   0.01h   0.02h   31.3k    1.6k       -       -       -     0.06
+2026-06-19  2026-06-19 18:21:03 (+09:00)  2026-06-19 18:54:04 (+09:00)   claude     1     13   0.26h   0.55h      29    3.9k  292.8k   17.4k       -     0.25
 
-( * = includes estimated values | Claude/Codex: API-equivalent USD | Copilot actual: AI Credits x $0.01; estimated/mixed rows may include API-equivalent estimates | Copilot CLI: cost unavailable )
+( * = includes estimated values | Claude/Codex: API-equivalent USD | Copilot actual: AI Credits x $0.01; estimated/mixed rows may include API-equivalent estimates | Copilot CLI: OTel may provide tokens/credits; other logs may not )
 コストは参考値。実際の実行環境に合わせて計算してください。
 ```
 
@@ -1018,7 +1090,7 @@ $ aimet report --tool copilot --model gpt-5.6-luna   # Copilotの同モデルだ
 $ aimet report --by project --since 7                # 直近7日をプロジェクト別に
 $ aimet report --start 20260705 --end 20260706       # 7/5〜7/6（ローカル時刻）
 $ aimet report --start 2026070705 --end 2026070706   # 7/7の5〜6時台だけ
-$ aimet report --by model --json > tokens.json       # tool + model別の生値JSONでBI連携
+$ aimet report --by model --json > tokens.json       # tool + access_mode + provider + model別の生値JSON
 $ aimet report --by tool --md report.md              # Markdownでファイル出力
 ```
 

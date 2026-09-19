@@ -1,4 +1,4 @@
-import { fmtLocal, fmtTokens, fmtHours, costLabel, noCostLabel, reportGroupColumns, rollupSessionRows, tok } from './report.js';
+import { fmtLocal, fmtTokens, fmtHours, costLabel, modelDisplay, noCostLabel, reportDisplayColumns, rollupSessionRows, tok } from './report.js';
 import type { ReportOpts } from './report.js';
 
 /** Markdown renderers for the three output levels: report / session / detail. */
@@ -29,14 +29,16 @@ export function reportMd(
   opts: Pick<ReportOpts, 'period' | 'by' | 'tool' | 'model'>
 ): string {
   const by = opts.by;
-  const groupColumns = reportGroupColumns(by, opts.tool, opts.model);
-  const header = ['period', 'start', 'last', ...groupColumns, 'sessions', 'turns',
-    'active', 'wall', 'input', 'output', 'cacheR', 'cacheW', 'cost($)'];
+  const displayColumns = reportDisplayColumns(by, opts.tool, opts.model);
+  const header = ['period', 'start', 'last', ...displayColumns, 'sessions', 'turns',
+    'active', 'wall', 'input', 'output', 'cacheR', 'cacheW', 'reasoning', 'cost($)'];
   const body = rows.map((r) => [
     String(r.period),
     fmtLocal(r.started_at),
     fmtLocal(r.last_event_at),
-    ...groupColumns.map((column) => String(r[column])),
+    ...displayColumns.map((column) => column === 'model'
+      ? modelDisplay(r[column], r.access_mode, r.provider)
+      : String(r[column])),
     String(r.sessions),
     String(r.turns),
     fmtHours(num(r.active_sec)),
@@ -45,6 +47,7 @@ export function reportMd(
     tok(r.output),
     tok(r.cache_read),
     tok(r.cache_write),
+    tok(r.reasoning),
     r.cost_usd == null ? '-' : num(r.cost_usd).toFixed(2) + (num(r.estimated) ? ' *' : ''),
   ]);
   return [
@@ -56,7 +59,7 @@ export function reportMd(
     '',
     '- active: 実働時間（5分超のアイドルを除外） / wall: 実時間',
     '- start / last: 期間内の最初のセッション開始・最後に観測したイベント（ローカル時刻）。lastは終了確定を意味しない',
-    '- cost: Claude/Codex はAPI換算USD。CopilotのactualはAI Credits × $0.01、推定・混在行はAPI換算推定を含む場合がある。Copilot CLIのコストは取得不可',
+    '- cost: Claude/Codex はAPI換算USD。CopilotのactualはAI Credits × $0.01、推定・混在行はAPI換算推定を含む場合がある。Copilot CLIもOTelにトークン数またはCreditsがあれば算出可能',
     '- `*` は推定値を含む。一部でもトークン量またはコストが不明な集計値は `-` とし、既知分だけを完全な合計として表示しない',
     '',
   ].join('\n');
@@ -75,7 +78,7 @@ export function sessionMd(
           ['session', 'model', 'turns', 'in', 'out', 'cacheR', 'active', 'cost($)'],
           children.map((k) => [
             String(k.session_id),
-            String(k.model),
+            modelDisplay(k.model, k.access_mode, k.provider),
             String(k.turns),
             tok(k.input_tokens),
             tok(k.output_tokens),
@@ -101,7 +104,7 @@ export function sessionMd(
         ['tool', String(r.tool)],
         ...(r.parent_session_id ? [['parent session', String(r.parent_session_id)] as [string, string]] : []),
         ['project', String(r.project)],
-        ['model', String(r.model)],
+        ['model', modelDisplay(r.model, r.access_mode, r.provider)],
         ['start', fmtLocal(r.started_at)],
         ['last', fmtLocal(r.last_event_at)],
         ['active / wall', `${fmtHours(num(r.active_sec))} / ${fmtHours(num(r.duration_sec))}`],
@@ -140,7 +143,7 @@ export function sessionsMd(
         String(r.kind),
         String(r.session_id),
         r.parent_session_id == null ? '-' : String(r.parent_session_id),
-        String(r.model),
+        modelDisplay(r.model, r.access_mode, r.provider),
       ])
     ),
     '',

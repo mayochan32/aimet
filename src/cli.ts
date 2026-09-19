@@ -64,7 +64,7 @@ async function main(): Promise<void> {
   const [
     { Store },
     { collect, ingestFile },
-    { report, reportRows, sessionsList, sessionsRows, sessionSummary, sessionRow, childrenRows, parseTimeArg },
+    { report, reportRows, sessionsList, sessionsRows, sessionSummary, sessionRow, childrenRows, parseTimeArg, otelNotice },
     { reportMd, sessionsMd, sessionMd, detailMd },
     { parserFor, parserForFile },
     { initTool },
@@ -133,7 +133,8 @@ async function main(): Promise<void> {
         json: values.json,
       };
       if (values.md) {
-        writeFileSync(values.md, reportMd(reportRows(store, opts), opts));
+        const notice = otelNotice(store, opts);
+        writeFileSync(values.md, reportMd(reportRows(store, opts), opts) + (notice ? `\n${notice}\n` : ''));
         console.log(`wrote ${values.md}`);
       } else {
         console.log(report(store, opts));
@@ -169,12 +170,14 @@ async function main(): Promise<void> {
             values.end ? `end=${values.end}` : '',
             values.all ? 'all' : `limit=${opts.limit}`,
           ].filter(Boolean);
-          writeFileSync(values.md, sessionsMd(result.rows, result.total, filters));
+          const notice = otelNotice(store, opts);
+          writeFileSync(values.md, sessionsMd(result.rows, result.total, filters) + (notice ? `\n${notice}\n` : ''));
           console.log(`wrote ${values.md}`);
         } else if (values.json) {
           console.log(JSON.stringify(sessionsRows(store, opts).rows, null, 2));
         } else {
-          console.log(sessionsList(store, opts));
+          const notice = otelNotice(store, opts);
+          console.log(sessionsList(store, opts) + (notice ? `\n\n${notice}` : ''));
         }
       } finally {
         store.close();
@@ -190,10 +193,13 @@ async function main(): Promise<void> {
           console.error('Session not found.');
           process.exit(1);
         }
-        writeFileSync(values.md, sessionMd(r, childrenRows(store, r.session_id)));
+        const notice = otelNotice(store, { tool: String(r.tool), id: String(r.session_id) });
+        writeFileSync(values.md, sessionMd(r, childrenRows(store, r.session_id)) + (notice ? `\n${notice}\n` : ''));
         console.log(`wrote ${values.md}`);
       } else {
-        console.log(sessionSummary(store, { tool: values.tool, id: values.id }));
+        const r = sessionRow(store, { tool: values.tool, id: values.id });
+        const notice = r ? otelNotice(store, { tool: String(r.tool), id: String(r.session_id) }) : '';
+        console.log(sessionSummary(store, { tool: values.tool, id: values.id }) + (notice ? `\n${notice}` : ''));
       }
       store.close();
       break;

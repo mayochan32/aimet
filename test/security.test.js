@@ -30,6 +30,8 @@ test('report: rejects non-whitelisted --by before touching SQL', async () => {
     () => reportRows(fakeStore, { by: 'tool; DROP TABLE sessions' }),
     /invalid --by/
   );
+  assert.throws(() => reportRows(fakeStore, { by: 'access' }), /invalid --by/);
+  assert.throws(() => reportRows(fakeStore, { by: 'provider' }), /invalid --by/);
   assert.throws(() => reportRows(fakeStore, { period: 'yearly' }), /invalid --period/);
   // valid values pass through
   assert.doesNotThrow(() => reportRows(fakeStore, { by: 'model', period: 'weekly' }));

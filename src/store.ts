@@ -10,8 +10,12 @@ export function defaultDbPath(): string {
 
 /** Prefer richer Copilot span traces over task-level chat snapshots. */
 function sourceRank(tool: string, logPath: string): number {
+  if (tool === 'copilot-cli') {
+    return logPath.replace(/\\/g, '/').endsWith('/events.jsonl') ? 1 : 4;
+  }
   if (tool !== 'copilot') return 1;
   const normalized = logPath.replace(/\\/g, '/');
+  if (/\/(?:agent-traces|[^/]*(?:otel|trace)[^/]*)\.(?:db|jsonl)$/i.test(normalized)) return 4;
   if (/\/GitHub\.copilot-chat\/debug-logs\/[^/]+\/main\.jsonl$/i.test(normalized)) return 3;
   if (/\/GitHub\.copilot-chat\/debug-logs\/[^/]+\/[^/]+\.jsonl$/i.test(normalized)) return 3;
   if (normalized.includes('/chatSessions/')) return 2;
@@ -71,6 +75,7 @@ export class Store {
         project TEXT NOT NULL,
         project_source TEXT NOT NULL DEFAULT 'unknown',
         model TEXT NOT NULL,
+        access_mode TEXT NOT NULL DEFAULT 'unknown',
         started_at TEXT NOT NULL,
         last_event_at TEXT NOT NULL,
         duration_sec INTEGER NOT NULL,
@@ -219,17 +224,40 @@ export class Store {
         COMMIT;
       `);
     }
+    const telemetryCols = this.db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[];
+    if (!telemetryCols.some((c) => c.name === 'provider')) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN provider TEXT NOT NULL DEFAULT 'unknown'`);
+    }
+    if (!telemetryCols.some((c) => c.name === 'server_address')) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN server_address TEXT`);
+    }
+    if (!telemetryCols.some((c) => c.name === 'access_mode')) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'unknown'`);
+      // Conservative backfill. Provider-specific rows are direct/BYOK; actual
+      // Copilot credit rows and provider=github are Copilot-routed. Ambiguous
+      // legacy rows remain unknown until their source telemetry is re-collected.
+      this.db.exec(`
+        UPDATE sessions SET access_mode = 'byok'
+        WHERE tool = 'copilot'
+          AND provider NOT IN ('unknown', 'github', 'mixed');
+        UPDATE sessions SET access_mode = 'copilot'
+        WHERE tool = 'copilot' AND access_mode = 'unknown'
+          AND (provider = 'github' OR cost_source = 'actual');
+      `);
+    }
   }
 
   /** Idempotent upsert keyed by (tool, session_id); skips stale data. */
   upsert(m: SessionMetrics): 'inserted' | 'updated' | 'skipped' {
     const existing = this.db
-      .prepare('SELECT last_event_at, log_path, project, project_source FROM sessions WHERE tool = ? AND session_id = ?')
+      .prepare('SELECT last_event_at, log_path, project, project_source, metric_scope, input_tokens FROM sessions WHERE tool = ? AND session_id = ?')
       .get(m.tool, m.sessionId) as {
         last_event_at: string;
         log_path: string;
         project: string;
         project_source: string;
+        metric_scope: string;
+        input_tokens: number | null;
       } | undefined;
 
     // A child debug span has its own call id, while Copilot's session index is
@@ -247,8 +275,12 @@ export class Store {
     }
 
     if (existing) {
-      const oldRank = sourceRank(m.tool, existing.log_path);
-      const newRank = sourceRank(m.tool, m.logPath);
+      const oldRank = existing.metric_scope === 'tree' && m.tool === 'copilot'
+        ? 4 : m.tool === 'copilot-cli' && existing.input_tokens !== null
+          ? 4 : sourceRank(m.tool, existing.log_path);
+      const newRank = m.metricScope === 'tree' && m.tool === 'copilot'
+        ? 4 : m.tool === 'copilot-cli' && m.tokens.input !== null
+          ? 4 : sourceRank(m.tool, m.logPath);
       const improvesProject = knownProject(project) && (
         !knownProject(existing.project) ||
         projectSourceRank(projectSource) > projectSourceRank(existing.project_source)
@@ -294,14 +326,17 @@ export class Store {
     this.db
       .prepare(
         `INSERT INTO sessions (tool, session_id, log_path, project, project_source, model,
+           access_mode, provider, server_address,
            started_at, last_event_at, duration_sec, active_sec,
            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
            cost_usd, estimated, metric_scope, cost_source,
            turns, updated_at, parent_session_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(tool, session_id) DO UPDATE SET
            log_path=excluded.log_path, project=excluded.project,
            project_source=excluded.project_source, model=excluded.model,
+           access_mode=excluded.access_mode,
+           provider=excluded.provider, server_address=excluded.server_address,
            started_at=excluded.started_at, last_event_at=excluded.last_event_at,
            duration_sec=excluded.duration_sec, active_sec=excluded.active_sec,
            input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,
@@ -314,6 +349,7 @@ export class Store {
       )
       .run(
         m.tool, m.sessionId, m.logPath, project, projectSource, m.model,
+        m.accessMode ?? 'unknown', m.provider ?? 'unknown', m.serverAddress ?? null,
         m.startedAt, m.lastEventAt, m.durationSec, m.activeSec,
         m.tokens.input, m.tokens.output, m.tokens.cacheRead, m.tokens.cacheWrite,
         m.tokens.reasoning, m.costUsd, m.estimated ? 1 : 0,

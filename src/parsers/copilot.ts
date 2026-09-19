@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import type { Parser, ProjectSource, SessionMetrics, TokenUsage } from '../types.js';
-import { costUsd } from '../pricing.js';
+import { copilotCostUsd } from '../pricing.js';
 import { jsonlRecords } from './util.js';
 import { copilotWorkspaceRoots } from '../paths.js';
 
@@ -351,6 +351,7 @@ export const copilotParser: Parser = {
     const tokens: TokenUsage = { input: 0, output: 0, cacheRead: null, cacheWrite: null, reasoning: null };
     const timestamps: number[] = [];
     let model = '';
+    const models = new Set<string>();
     let actualCost = 0;
     let estimatedCost = 0;
     let actualRequests = 0;
@@ -382,13 +383,14 @@ export const copilotParser: Parser = {
       const requestModel = typeof md.resolvedModel === 'string'
         ? md.resolvedModel
         : typeof r.modelId === 'string' ? r.modelId : model;
+      if (requestModel) models.add(requestModel);
       const requestCredits = finite(r.copilotCredits);
       if (requestCredits !== null) {
         actualCost += requestCredits * 0.01;
         actualRequests++;
       } else {
         const estimated = requestModel
-          ? costUsd(requestModel, { input: Math.max(0, prompt - cached), output: finite(r.completionTokens) ?? 0, cacheRead: cached, cacheWrite: 0, reasoning: 0 })
+          ? copilotCostUsd(requestModel, { input: Math.max(0, prompt - cached), output: finite(r.completionTokens) ?? 0, cacheRead: hasCacheDetails ? cached : null, cacheWrite: null, reasoning: null })
           : null;
         if (estimated === null) unknownCost = true;
         else estimatedCost += estimated;
@@ -413,7 +415,8 @@ export const copilotParser: Parser = {
       logPath: path,
       project: projectInfo.project,
       projectSource: projectInfo.source,
-      model: model || 'unknown',
+      model: models.size > 1 ? 'mixed' : (model || 'unknown'),
+      accessMode: actualRequests > 0 ? 'copilot' : 'unknown',
       startedAt: iso(first),
       durationSec: Math.round((last - first) / 1000),
       activeSec: Math.round(activeMs / 1000),

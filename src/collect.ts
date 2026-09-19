@@ -6,6 +6,14 @@ import { parsers } from './parsers/index.js';
 import { Store } from './store.js';
 
 function* walk(dir: string): Generator<string> {
+  try {
+    if (statSync(dir).isFile()) {
+      yield dir;
+      return;
+    }
+  } catch {
+    return;
+  }
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
@@ -47,9 +55,12 @@ export async function collect(opts: {
         if (cutoff && statSync(file).mtimeMs < cutoff) continue;
         res.scanned++;
         try {
-          const m = await parser.parseFile(file);
-          if (!m) continue;
-          res[opts.store.upsert(m) as 'inserted' | 'updated' | 'skipped']++;
+          const parsed = await parser.parseFile(file);
+          if (!parsed) continue;
+          const metrics = Array.isArray(parsed) ? parsed : [parsed];
+          for (const m of metrics) {
+            res[opts.store.upsert(m) as 'inserted' | 'updated' | 'skipped']++;
+          }
         } catch (err) {
           res.errors++;
           if (!opts.quiet) console.error(`aimet: failed to parse ${file}: ${err}`);
@@ -65,8 +76,9 @@ export async function ingestFile(
   store: Store,
   parser: Parser,
   path: string
-): Promise<SessionMetrics | null> {
-  const m = await parser.parseFile(path);
-  if (m) store.upsert(m);
-  return m;
+): Promise<SessionMetrics | SessionMetrics[] | null> {
+  const parsed = await parser.parseFile(path);
+  if (!parsed) return null;
+  for (const m of Array.isArray(parsed) ? parsed : [parsed]) store.upsert(m);
+  return parsed;
 }

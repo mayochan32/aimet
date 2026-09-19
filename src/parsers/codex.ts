@@ -35,12 +35,14 @@ export const codexParser: Parser = {
   async parseFile(path: string): Promise<SessionMetrics | null> {
     const timestamps: string[] = [];
     let model = '';
+    const contextModels = new Set<string>();
     let turnCwd = '';
     let turns = 0;
     let best: Record<string, number> | null = null; // largest cumulative usage
     let previousTotal: Record<string, number> | null = null;
-    const requestUsages: TokenUsage[] = [];
+    const requestUsages: Array<{ model: string; tokens: TokenUsage }> = [];
     let requestUsageComplete = true;
+    let requestModelMissing = false;
     const sessionMetas: CodexSessionMeta[] = [];
 
     for await (const rec of jsonlRecords(path)) {
@@ -53,7 +55,10 @@ export const codexParser: Parser = {
         const meta = codexSessionMeta(payload);
         if (meta) sessionMetas.push(meta);
       } else if (rec.type === 'turn_context') {
-        if (typeof payload.model === 'string') model = payload.model;
+        if (typeof payload.model === 'string') {
+          model = payload.model;
+          contextModels.add(model);
+        }
         if (typeof payload.cwd === 'string' && !turnCwd) turnCwd = payload.cwd;
       } else if (rec.type === 'event_msg') {
         const pt = payload.type;
@@ -67,7 +72,8 @@ export const codexParser: Parser = {
           if (total && (total.total_tokens ?? 0) > (previousTotal?.total_tokens ?? 0)) {
             const last = info?.last_token_usage as Record<string, number> | undefined;
             if (last && usageMatchesDelta(previousTotal, total, last)) {
-              requestUsages.push(codexTokens(last));
+              if (!model) requestModelMissing = true;
+              requestUsages.push({ model: model || 'gpt-5-codex', tokens: codexTokens(last) });
             } else {
               requestUsageComplete = false;
             }
@@ -95,14 +101,18 @@ export const codexParser: Parser = {
     // When the log carries no model name we fall back to gpt-5-codex pricing.
     // Tokens are still measured, but the unit price is a guess -> mark estimated.
     const modelKnown = model !== '';
-    const resolvedModel = model || 'gpt-5-codex';
-    const needsRequestPricing = hasLongContextSurcharge(resolvedModel);
-    const missingBilledCacheWrites = billsCacheWrites(resolvedModel) && tokens.cacheWrite === null;
+    const observedModels = new Set([...contextModels, ...requestUsages.map((request) => request.model)]);
+    const mixedModels = observedModels.size > 1;
+    const resolvedModel = mixedModels ? 'mixed' : ([...observedModels][0] || model || 'gpt-5-codex');
+    const needsRequestPricing = hasLongContextSurcharge(resolvedModel) || mixedModels;
+    const missingBilledCacheWrites = requestUsages.some(
+      (request) => billsCacheWrites(request.model) && request.tokens.cacheWrite === null
+    ) || (billsCacheWrites(resolvedModel) && tokens.cacheWrite === null);
     const exactRequestPricing = requestUsageComplete && requestUsages.length > 0 &&
-      !requestUsages.some((usage) => billsCacheWrites(resolvedModel) && usage.cacheWrite === null);
-    const sessionCost = needsRequestPricing && exactRequestPricing
-      ? sumKnownCosts(requestUsages.map((usage) => costUsd(resolvedModel, usage)))
-      : costUsd(resolvedModel, tokens, { applyLongContextSurcharge: !needsRequestPricing });
+      !requestUsages.some((request) => billsCacheWrites(request.model) && request.tokens.cacheWrite === null);
+    const sessionCost = exactRequestPricing
+      ? sumKnownCosts(requestUsages.map((request) => costUsd(request.model, request.tokens)))
+      : mixedModels ? null : costUsd(resolvedModel, tokens, { applyLongContextSurcharge: !needsRequestPricing });
     return {
       tool: 'codex',
       sessionId: sessionId || idFromName || basename(path, '.jsonl'),
@@ -114,7 +124,8 @@ export const codexParser: Parser = {
       activeSec: activeSeconds(timestamps),
       tokens,
       costUsd: sessionCost,
-      estimated: !modelKnown || missingBilledCacheWrites || (needsRequestPricing && !exactRequestPricing),
+      estimated: !modelKnown || requestModelMissing || missingBilledCacheWrites ||
+        (needsRequestPricing && !exactRequestPricing),
       turns,
       lastEventAt: last,
       parentSessionId,

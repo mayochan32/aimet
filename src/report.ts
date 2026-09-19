@@ -22,6 +22,55 @@ export interface SessionsOpts {
   limit?: number;
 }
 
+/** Explain incomplete Copilot data without claiming to know VS Code's effective settings. */
+export function otelNotice(
+  store: Store,
+  opts: Pick<ReportOpts, 'tool' | 'model' | 'sinceDays' | 'startISO' | 'endISO'> & { id?: string } = {}
+): string {
+  if (opts.tool && opts.tool !== 'copilot' && opts.tool !== 'copilot-cli') return '';
+  const conditions = ["s.tool IN ('copilot', 'copilot-cli')", `NOT EXISTS (
+    SELECT 1 FROM sessions AS parent
+    WHERE parent.tool = s.tool AND parent.session_id = s.parent_session_id
+      AND parent.metric_scope = 'tree'
+  )`];
+  const params: unknown[] = [];
+  if (opts.tool) { conditions.push('s.tool = ?'); params.push(opts.tool); }
+  if (opts.model) { conditions.push('s.model = ?'); params.push(opts.model); }
+  if (opts.id) { conditions.push('s.session_id LIKE ?'); params.push(`${opts.id}%`); }
+  if (opts.sinceDays) {
+    conditions.push('s.started_at >= ?');
+    params.push(new Date(Date.now() - opts.sinceDays * 86_400_000).toISOString());
+  }
+  if (opts.startISO) { conditions.push('s.started_at >= ?'); params.push(opts.startISO); }
+  if (opts.endISO) { conditions.push('s.started_at <= ?'); params.push(opts.endISO); }
+  const rows = store.query(
+    `SELECT s.tool, s.log_path, s.parent_session_id, s.metric_scope, s.input_tokens FROM sessions AS s WHERE ${conditions.join(' AND ')}`,
+    ...params
+  );
+  const warnings = new Set<string>();
+  for (const row of rows) {
+    const path = String(row.log_path ?? '').replace(/\\/g, '/').toLowerCase();
+    const explicit = [process.env.AIMET_COPILOT_OTEL_FILE,
+      process.env.AIMET_COPILOT_CLI_OTEL_FILE, process.env.COPILOT_OTEL_FILE_EXPORTER_PATH]
+      .filter(Boolean).map((v) => String(v).replace(/\\/g, '/').toLowerCase());
+    const isOtel = (row.tool === 'copilot' && row.metric_scope === 'tree') ||
+      (row.tool === 'copilot-cli' && row.input_tokens !== null) ||
+      explicit.includes(path) || path.endsWith('/agent-traces.db') ||
+      /\/(?:[^/]*(?:otel|trace)[^/]*)\.(?:db|jsonl)$/.test(path);
+    if (isOtel) continue;
+    if (row.tool === 'copilot-cli') warnings.add('cli');
+    else warnings.add('vscode');
+  }
+  const messages: string[] = [];
+  if (warnings.has('vscode')) messages.push(
+    '一部のCopilotデータはOTel記録から収集できていません。今後の詳しい内訳にはVS Codeで "github.copilot.chat.otel.dbSpanExporter.enabled": true を設定してください。'
+  );
+  if (warnings.has('cli')) messages.push(
+    '一部のCopilot CLIデータはOTel記録から収集できていません。今後の詳しい内訳にはCLI起動時に COPILOT_OTEL_FILE_EXPORTER_PATH を設定してください。'
+  );
+  return messages.join('\n');
+}
+
 /**
  * Parse a LOCAL-time stamp "YYYYMMDD[hh[mm[ss]]]" into an ISO(UTC) string.
  * Missing trailing parts default to the start of the unit; pass end=true to
@@ -87,6 +136,24 @@ export function fmtHours(sec: number): string {
   return (sec / 3600).toFixed(2) + 'h';
 }
 
+function providerLabel(provider: unknown): string {
+  const value = String(provider ?? 'unknown');
+  const labels: Record<string, string> = {
+    openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemini',
+    openrouter: 'OpenRouter', xai: 'xAI', 'azure.ai.openai': 'Azure OpenAI',
+    github: 'GitHub', custom: 'Custom', mixed: 'Mixed', unknown: 'Unknown',
+  };
+  return labels[value.toLowerCase()] ?? value;
+}
+
+/** Human display only; the stored/JSON model id remains unchanged. */
+export function modelDisplay(model: unknown, access: unknown, provider: unknown): string {
+  const name = String(model ?? 'unknown');
+  if (String(access ?? 'unknown') !== 'byok') return name;
+  const p = String(provider ?? 'unknown').toLowerCase();
+  return `${name} [BYOK${p === 'unknown' ? '' : `/${providerLabel(provider)}`}]`;
+}
+
 /**
  * Columns that identify one report row. Model names are not globally unique
  * accounting keys: the same model used through Copilot has Copilot credit
@@ -96,12 +163,36 @@ export function reportGroupColumns(
   by?: ReportOpts['by'],
   tool?: string,
   model?: string
-): Array<'tool' | 'project' | 'model'> {
-  const columns: Array<'tool' | 'project' | 'model'> = [];
-  if (tool || model || by === 'tool' || by === 'model') columns.push('tool');
-  if (model) columns.push('model');
+): Array<'tool' | 'project' | 'access' | 'model' | 'provider'> {
+  const columns: Array<'tool' | 'project' | 'access' | 'model' | 'provider'> = [];
+  if (tool || model || by === 'tool' || by === 'model') {
+    columns.push('tool');
+  }
+  // Keep route/provider in the SQL grouping so identical model ids do not
+  // merge, but never expose them as standalone human-facing columns.
+  if (model || by === 'model') columns.push('access');
+  if (model || by === 'model') columns.push('provider', 'model');
   if (by && !columns.includes(by)) columns.push(by);
   return columns;
+}
+
+/**
+ * Storage/grouping keeps access and provider separate so identical model ids
+ * never merge. Human model reports encode those values in the model label and
+ * omit the otherwise repetitive columns. JSON continues to expose all fields.
+ */
+export function reportDisplayColumns(
+  by?: ReportOpts['by'],
+  tool?: string,
+  model?: string
+): Array<'tool' | 'project' | 'access' | 'model' | 'provider'> {
+  const columns = reportGroupColumns(by, tool, model);
+  return columns.filter((column) => column !== 'access' && column !== 'provider');
+}
+
+function humanGroupValue(column: string, row: Record<string, unknown>): string {
+  if (column === 'model') return modelDisplay(row.model, row.access_mode, row.provider);
+  return String(row[column]).slice(0, 28);
 }
 
 /** Aggregated rows for a report (shared by text/JSON/Markdown renderers). */
@@ -122,7 +213,8 @@ export function reportRows(store: Store, opts: ReportOpts = {}): Record<string, 
         ? `substr(${local}, 1, 7)`
         : `strftime('%Y-W%W', ${local})`;
   const groupColumns = reportGroupColumns(opts.by, opts.tool, opts.model);
-  const group = groupColumns.map((column) => `, s.${column}`).join('');
+  const sqlColumn = (column: string) => column === 'access' ? 'access_mode' : column;
+  const group = groupColumns.map((column) => `, s.${sqlColumn(column)} AS ${sqlColumn(column)}`).join('');
   const conds: string[] = [];
   const params: unknown[] = [];
   if (opts.sinceDays) {
@@ -166,11 +258,12 @@ export function reportRows(store: Store, opts: ReportOpts = {}): Record<string, 
        CASE WHEN COUNT(output_tokens) = COUNT(*) THEN SUM(output_tokens) END AS output,
        CASE WHEN COUNT(cache_read_tokens) = COUNT(*) THEN SUM(cache_read_tokens) END AS cache_read,
        CASE WHEN COUNT(cache_write_tokens) = COUNT(*) THEN SUM(cache_write_tokens) END AS cache_write,
+       CASE WHEN COUNT(reasoning_tokens) = COUNT(*) THEN SUM(reasoning_tokens) END AS reasoning,
        CASE WHEN COUNT(cost_usd) = COUNT(*) THEN SUM(cost_usd) END AS cost_usd,
        MAX(estimated) AS estimated
      FROM sessions AS s ${where}
-     GROUP BY period${group}
-     ORDER BY period DESC${groupColumns.map((column) => `, ${column}`).join('')}`,
+     GROUP BY period${groupColumns.map((column) => `, s.${sqlColumn(column)}`).join('')}
+     ORDER BY period DESC${groupColumns.map((column) => `, ${sqlColumn(column)}`).join('')}`,
     ...params
   );
 }
@@ -179,16 +272,15 @@ export function report(store: Store, opts: ReportOpts = {}): string {
   const rows = reportRows(store, opts);
   if (opts.json) return JSON.stringify(rows, null, 2);
   if (rows.length === 0) return 'No data. Run `aimet collect` first.';
+  const notice = otelNotice(store, opts);
 
-  const groupColumns = reportGroupColumns(opts.by, opts.tool, opts.model);
-  const header = ['period', 'start', 'last', ...groupColumns, 'sess', 'turns', 'active', 'wall', 'in', 'out', 'cacheR', 'cacheW', 'cost($)'];
+  const displayColumns = reportDisplayColumns(opts.by, opts.tool, opts.model);
+  const header = ['period', 'start', 'last', ...displayColumns, 'sess', 'turns', 'active', 'wall', 'in', 'out', 'cacheR', 'cacheW', 'reason', 'cost($)'];
   const lines = rows.map((r) => [
     String(r.period),
     fmtLocal(r.started_at),
     fmtLocal(r.last_event_at),
-    ...groupColumns.map((column) => column === 'model'
-      ? String(r[column])
-      : String(r[column]).slice(0, 28)),
+    ...displayColumns.map((column) => humanGroupValue(column, r)),
     String(r.sessions),
     String(r.turns),
     fmtHours(num(r.active_sec)),
@@ -197,6 +289,7 @@ export function report(store: Store, opts: ReportOpts = {}): string {
     tok(r.output),
     tok(r.cache_read),
     tok(r.cache_write),
+    tok(r.reasoning),
     r.cost_usd == null ? '-' : num(r.cost_usd).toFixed(2) + (num(r.estimated) ? '*' : ''),
   ]);
 
@@ -205,8 +298,9 @@ export function report(store: Store, opts: ReportOpts = {}): string {
   return [fmt(header), fmt(widths.map((w) => '-'.repeat(w))), ...lines.map(fmt)].join('\n') +
     '\n\n( * = includes estimated values | Claude/Codex: API-equivalent USD | ' +
     'Copilot actual: AI Credits x $0.01; estimated/mixed rows may include API-equivalent estimates | ' +
-    'Copilot CLI: cost unavailable )' +
-    '\nコストは参考値。実際の実行環境に合わせて計算してください。';
+    'Copilot CLI: OTel may provide tokens/credits; other logs may not )' +
+    '\nコストは参考値。実際の実行環境に合わせて計算してください。' +
+    (notice ? `\n${notice}` : '');
 }
 
 /** Filtered session metadata and total count before the display limit. */
@@ -246,7 +340,7 @@ export function sessionsRows(
   const rows = store.query(
     `SELECT tool, session_id, parent_session_id,
             CASE WHEN parent_session_id IS NULL THEN 'session' ELSE 'subagent' END AS kind,
-            model, started_at, last_event_at, turns
+            model, access_mode, provider, started_at, last_event_at, turns
      FROM sessions ${where}
      ORDER BY started_at DESC, tool ASC, session_id ASC${limit}`,
     ...params
@@ -266,7 +360,7 @@ export function sessionsList(
   const blocks = rows.map((r) => {
     const lines = [
       `${fmtLocal(r.started_at)} -> ${fmtLocal(r.last_event_at)} | ` +
-        `${r.tool} | ${r.kind} | ${r.model}`,
+        `${r.tool} | ${r.kind} | ${modelDisplay(r.model, r.access_mode, r.provider)}`,
       `  id     : ${r.session_id}`,
     ];
     if (r.parent_session_id != null) lines.push(`  parent : ${r.parent_session_id}`);
@@ -281,7 +375,7 @@ export function sessionsList(
 
 /** Cost semantics differ per tool: see README "コスト計算の仕組み". */
 export function costLabel(r: Record<string, unknown>): string {
-  if (r.tool === 'copilot') {
+  if (r.tool === 'copilot' || r.tool === 'copilot-cli') {
     // Actual spend: also show the raw credit amount (1 credit = $0.01 fixed),
     // since Copilot budgets/dashboards are denominated in credits.
     const source = String(r.cost_source ?? (num(r.estimated) ? 'estimated' : 'actual'));
@@ -298,8 +392,8 @@ export function costLabel(r: Record<string, unknown>): string {
 /** Why a session has no cost. Copilot CLI logs no input tokens; others = unknown model. */
 export function noCostLabel(r: Record<string, unknown>): string {
   return r.tool === 'copilot-cli'
-    ? 'n/a (Copilot CLI records no input tokens)'
-    : 'unknown model';
+    ? 'n/a (token usage/credits not recorded in this CLI source)'
+    : 'unknown model or incomplete token usage';
 }
 
 /** Latest matching session row, or null. */
@@ -411,7 +505,8 @@ export function sessionSummary(store: Store, opts: { tool?: string; id?: string 
         `subagents (${kids.n}):`,
         ...kidRows.map(
           (k) =>
-            `  - ${childSessionLabel(k.session_id, r.session_id)}  ${String(k.model)}  ` +
+            `  - ${childSessionLabel(k.session_id, r.session_id)}  ` +
+            `${modelDisplay(k.model, k.access_mode, k.provider)}  ` +
             `turns ${k.turns} / in ${tok(k.input_tokens)} / out ${tok(k.output_tokens)} / ` +
             `cacheR ${tok(k.cache_read_tokens)} / ` +
             `${k.cost_usd == null ? 'cost n/a' : '$' + num(k.cost_usd).toFixed(4) + costLabel(k)}`
@@ -431,11 +526,11 @@ export function sessionSummary(store: Store, opts: { tool?: string; id?: string 
     `session : ${r.tool} ${r.session_id}`,
     ...parentLine,
     `project : ${r.project}`,
-    `model   : ${r.model}`,
+    `model   : ${modelDisplay(r.model, r.access_mode, r.provider)}`,
     `time    : ${fmtLocal(r.started_at)} -> ${fmtLocal(r.last_event_at)} ` +
       `(active ${fmtHours(num(r.active_sec))} / wall ${fmtHours(num(r.duration_sec))})`,
     `turns   : ${r.turns}`,
-    `tokens  : in ${tok(r.input_tokens)} / out ${tok(r.output_tokens)} / cacheR ${tok(r.cache_read_tokens)} / cacheW ${tok(r.cache_write_tokens)}`,
+    `tokens  : in ${tok(r.input_tokens)} / out ${tok(r.output_tokens)} / cacheR ${tok(r.cache_read_tokens)} / cacheW ${tok(r.cache_write_tokens)} / reason ${tok(r.reasoning_tokens)}`,
     `cost    : ${r.cost_usd == null ? noCostLabel(r) : '$' + num(r.cost_usd).toFixed(4) + costLabel(r)}`,
     ...kidLines,
     '',

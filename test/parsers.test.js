@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 
 import { claudeParser } from '../dist/parsers/claude.js';
 import { codexParser } from '../dist/parsers/codex.js';
 import { copilotParser } from '../dist/parsers/copilot.js';
 import { copilotCliParser } from '../dist/parsers/copilotcli.js';
 import { copilotSubagentParser } from '../dist/parsers/copilotsubagent.js';
+import { copilotOtelParser, copilotCliOtelParser } from '../dist/parsers/copilototel.js';
 
 const fx = (name) => join(import.meta.dirname, 'fixtures', name);
 
@@ -56,6 +58,34 @@ test('claude: official subagent path creates a distinct child linked to its pare
     false,
     'only documented agent-*.jsonl files are accepted inside subagents/'
   );
+});
+
+test('claude: prices switched models and advisor usage per inference', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-claude-models-'));
+  const file = join(root, 'models.jsonl');
+  const record = (id, timestamp, model, usage) => JSON.stringify({
+    type: 'assistant', timestamp, sessionId: 'models', cwd: '/project',
+    message: { id, model, usage },
+  });
+  writeFileSync(file, [
+    record('a', '2026-09-20T00:00:00.000Z', 'claude-sonnet-5', {
+      input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+      iterations: [
+        { type: 'message', input_tokens: 100, output_tokens: 10 },
+        { type: 'advisor_message', model: 'claude-opus-5', input_tokens: 20,
+          output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      ],
+    }),
+    record('b', '2026-09-20T00:00:01.000Z', 'claude-opus-5', {
+      input_tokens: 30, output_tokens: 4, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+    }),
+  ].join('\n'));
+  const m = await claudeParser.parseFile(file);
+  assert.ok(m);
+  assert.equal(m.model, 'mixed');
+  assert.equal(m.tokens.input, 150);
+  assert.equal(m.tokens.output, 19);
+  assert.equal(m.costUsd, (100 * 2 + 10 * 10 + 20 * 5 + 5 * 25 + 30 * 5 + 4 * 25) / 1e6);
 });
 
 test('codex: uses max cumulative usage and splits cached input', async () => {
@@ -189,6 +219,7 @@ test('copilot: Push appends requests instead of replacing completed requests', a
   assert.equal(m.tokens.output, 300);
   assert.equal(m.costUsd, 0.04);
   assert.equal(m.costSource, 'actual');
+  assert.equal(m.accessMode, 'copilot');
   assert.equal(m.metricScope, 'own');
 });
 
@@ -382,6 +413,7 @@ test('copilot subagent: exact AIU wins, zero AIU is actual, duplicate span is ig
   assert.equal(m.estimated, false);
   assert.equal(m.costSource, 'actual');
   assert.equal(m.metricScope, 'own');
+  assert.equal(m.accessMode, 'copilot');
 });
 
 test('copilot subagent: combines exact AIU with per-request fallback as mixed', async () => {
@@ -459,6 +491,208 @@ test('copilot parent main span is exact and own-scoped', async () => {
   assert.equal(m.costUsd, 0.0125);
   assert.equal(m.costSource, 'actual');
   assert.equal(m.metricScope, 'own');
+});
+
+test('copilot OTel SQLite: aggregates BYOK provider, cache write and reasoning tokens', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-copilot-otel-'));
+  const path = join(root, 'agent-traces.db');
+  const db = new DatabaseSync(path);
+  db.exec(`
+    CREATE TABLE spans (
+      span_id TEXT PRIMARY KEY, trace_id TEXT NOT NULL, parent_span_id TEXT,
+      name TEXT NOT NULL, start_time_ms INTEGER NOT NULL, end_time_ms INTEGER NOT NULL,
+      status_code INTEGER NOT NULL DEFAULT 0, status_message TEXT,
+      operation_name TEXT, provider_name TEXT, agent_name TEXT, conversation_id TEXT,
+      request_model TEXT, response_model TEXT,
+      input_tokens INTEGER, output_tokens INTEGER, cached_tokens INTEGER, reasoning_tokens INTEGER,
+      tool_name TEXT, tool_call_id TEXT, tool_type TEXT,
+      chat_session_id TEXT, turn_index INTEGER, ttft_ms REAL
+    );
+    CREATE TABLE span_attributes (
+      span_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT,
+      PRIMARY KEY (span_id, key)
+    );
+  `);
+  db.prepare(`INSERT INTO spans (
+    span_id, trace_id, name, start_time_ms, end_time_ms, operation_name,
+    provider_name, conversation_id, request_model, response_model,
+    input_tokens, output_tokens, cached_tokens, reasoning_tokens
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run('span-1', 'trace-1', 'chat claude-sonnet-4-6', 1783373827000, 1783373832000,
+      'chat', 'github', 'byok-session-1', 'claude-sonnet-4-6', 'claude-sonnet-4-6',
+      1000, 100, 400, 20);
+  const attr = db.prepare('INSERT INTO span_attributes (span_id, key, value) VALUES (?, ?, ?)');
+  attr.run('span-1', 'gen_ai.usage.cache_creation.input_tokens', '100');
+  attr.run('span-1', 'gen_ai.usage.reasoning.output_tokens', '20');
+  attr.run('span-1', 'server.address', 'api.anthropic.com');
+  db.close();
+
+  assert.equal(copilotOtelParser.isLogFile(path), true);
+  const sessions = await copilotOtelParser.parseFile(path);
+  assert.ok(sessions);
+  assert.equal(sessions.length, 1);
+  const m = sessions[0];
+  assert.equal(m.sessionId, 'byok-session-1');
+  assert.equal(m.provider, 'anthropic');
+  assert.equal(m.accessMode, 'byok');
+  assert.equal(m.serverAddress, 'api.anthropic.com');
+  assert.equal(m.model, 'claude-sonnet-4-6');
+  assert.deepEqual(m.tokens, {
+    input: 500, output: 100, cacheRead: 400, cacheWrite: 100, reasoning: 20,
+  });
+  assert.equal(m.metricScope, 'tree');
+  assert.equal(m.costSource, 'estimated');
+  assert.ok(Math.abs(m.costUsd - 0.003495) < 1e-12);
+});
+
+test('copilot OTel SQLite: infers a direct OpenAI BYOK call and ignores utility chats', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-copilot-otel-real-shape-'));
+  const path = join(root, 'agent-traces.db');
+  const db = new DatabaseSync(path);
+  db.exec(`
+    CREATE TABLE spans (
+      span_id TEXT PRIMARY KEY, trace_id TEXT NOT NULL, parent_span_id TEXT,
+      name TEXT NOT NULL, start_time_ms INTEGER NOT NULL, end_time_ms INTEGER NOT NULL,
+      status_code INTEGER NOT NULL DEFAULT 0, status_message TEXT,
+      operation_name TEXT, provider_name TEXT, agent_name TEXT, conversation_id TEXT,
+      request_model TEXT, response_model TEXT,
+      input_tokens INTEGER, output_tokens INTEGER, cached_tokens INTEGER, reasoning_tokens INTEGER,
+      tool_name TEXT, tool_call_id TEXT, tool_type TEXT,
+      chat_session_id TEXT, turn_index INTEGER, ttft_ms REAL
+    );
+    CREATE TABLE span_attributes (
+      span_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT,
+      PRIMARY KEY (span_id, key)
+    );
+    INSERT INTO spans (
+      span_id, trace_id, name, start_time_ms, end_time_ms, operation_name,
+      provider_name, conversation_id, request_model, response_model,
+      input_tokens, output_tokens, cached_tokens, reasoning_tokens
+    ) VALUES
+      ('byok', 'trace-byok', 'chat gpt-5', 1783373827000, 1783373832000,
+       'chat', 'github', 'real-byok-session', 'gpt-5', 'gpt-5-2025-08-07', 1000, 100, 400, 20),
+      ('hosted', 'trace-hosted', 'chat gpt-5', 1783373833000, 1783373835000,
+       'chat', 'github', 'copilot-hosted-session', 'gpt-5', 'gpt-5', 200, 20, 0, NULL),
+      ('utility', 'trace-utility', 'chat gpt-4o-mini', 1783373828000, 1783373829000,
+       'chat', 'github', NULL, 'gpt-4o-mini', 'gpt-4o-mini', 100, 10, 0, NULL);
+    INSERT INTO span_attributes (span_id, key, value) VALUES
+      ('byok', 'server.address', 'api.openai.com'),
+      ('byok', 'gen_ai.usage.reasoning.output_tokens', '20'),
+      ('hosted', 'server.address', 'api.githubcopilot.com'),
+      ('hosted', 'copilot_chat.copilot_usage_nano_aiu', '1000000000'),
+      ('utility', 'copilot_chat.copilot_usage_nano_aiu', '0');
+  `);
+  db.close();
+
+  const sessions = await copilotOtelParser.parseFile(path);
+  assert.ok(sessions);
+  assert.equal(sessions.length, 2, 'conversationless utility chat is excluded');
+  const byok = sessions.find((s) => s.sessionId === 'real-byok-session');
+  assert.ok(byok);
+  assert.equal(byok.provider, 'openai');
+  assert.equal(byok.accessMode, 'byok');
+  assert.equal(byok.serverAddress, 'api.openai.com');
+  const hosted = sessions.find((s) => s.sessionId === 'copilot-hosted-session');
+  assert.ok(hosted);
+  assert.equal(hosted.provider, 'github');
+  assert.equal(hosted.accessMode, 'copilot');
+  assert.equal(hosted.costSource, 'actual');
+});
+
+test('copilot OTel file exporter: parses JSONL span attributes', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-copilot-otel-file-'));
+  const path = join(root, 'copilot-otel.jsonl');
+  writeFileSync(path, JSON.stringify({
+    name: 'chat claude-sonnet-4-6',
+    _spanContext: { traceId: 'trace-file-1', spanId: 'span-file-1' },
+    startTime: [1783373827, 0],
+    duration: [2, 500000000],
+    attributes: {
+      'gen_ai.operation.name': 'chat',
+      'gen_ai.provider.name': 'anthropic',
+      'gen_ai.conversation.id': 'byok-file-session-1',
+      'gen_ai.response.model': 'claude-sonnet-4-6',
+      'gen_ai.usage.input_tokens': 1000,
+      'gen_ai.usage.output_tokens': 100,
+      'gen_ai.usage.cache_read.input_tokens': 400,
+      'gen_ai.usage.cache_creation.input_tokens': 100,
+      'gen_ai.usage.reasoning.output_tokens': 20,
+      'server.address': 'api.anthropic.com',
+    },
+  }) + '\n');
+
+  const sessions = await copilotOtelParser.parseFile(path);
+  assert.ok(sessions);
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].sessionId, 'byok-file-session-1');
+  assert.equal(sessions[0].provider, 'anthropic');
+  assert.equal(sessions[0].accessMode, 'byok');
+  assert.equal(sessions[0].activeSec, 3);
+  assert.deepEqual(sessions[0].tokens, {
+    input: 500, output: 100, cacheRead: 400, cacheWrite: 100, reasoning: 20,
+  });
+});
+
+test('copilot OTel: a direct custom endpoint is BYOK even when provider is unavailable', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-copilot-otel-custom-'));
+  const path = join(root, 'copilot-otel.jsonl');
+  writeFileSync(path, JSON.stringify({
+    _spanContext: { traceId: 'trace-custom', spanId: 'span-custom' },
+    startTime: [1783373827, 0],
+    duration: [1, 0],
+    attributes: {
+      'gen_ai.operation.name': 'chat',
+      'gen_ai.conversation.id': 'custom-endpoint-session',
+      'gen_ai.response.model': 'private-model',
+      'gen_ai.usage.input_tokens': 10,
+      'gen_ai.usage.output_tokens': 2,
+      'server.address': 'llm.example.test',
+    },
+  }) + '\n');
+
+  const sessions = await copilotOtelParser.parseFile(path);
+  assert.ok(sessions);
+  assert.equal(sessions[0].accessMode, 'byok');
+  assert.equal(sessions[0].provider, 'custom');
+});
+
+test('copilot CLI OTel: parent/child calls count tokens once and root credits once', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-cli-otel-'));
+  const path = join(root, 'copilot-otel.jsonl');
+  const attrs = (entries) => Object.entries(entries).map(([key, value]) => ({
+    key, value: typeof value === 'number' ? { intValue: String(value) } : { stringValue: value },
+  }));
+  const span = (spanId, parentSpanId, start, attributes) => ({
+    traceId: 'trace-1', spanId, parentSpanId, startTimeUnixNano: String(start * 1e6),
+    endTimeUnixNano: String((start + 100) * 1e6), attributes: attrs(attributes),
+  });
+  const rows = [
+    span('root', '', 1783373827000, {
+      'gen_ai.operation.name': 'invoke_agent', 'gen_ai.conversation.id': 'cli-session',
+      'github.copilot.nano_aiu': 1000000000,
+    }),
+    span('subagent', 'root', 1783373827010, {
+      'gen_ai.operation.name': 'invoke_agent', 'gen_ai.conversation.id': 'child-session',
+      'github.copilot.nano_aiu': 1000000000,
+    }),
+    span('chat-1', 'subagent', 1783373827020, {
+      'gen_ai.operation.name': 'chat', 'gen_ai.conversation.id': 'child-session',
+      'gen_ai.provider.name': 'github', 'gen_ai.response.model': 'gpt-5.6-luna',
+      'gen_ai.usage.input_tokens': 100, 'gen_ai.usage.output_tokens': 20,
+      'gen_ai.usage.cache_read.input_tokens': 30, 'gen_ai.usage.cache_creation.input_tokens': 5,
+      'github.copilot.nano_aiu': 1000000000, 'server.address': 'api.githubcopilot.com',
+    }),
+  ];
+  writeFileSync(path, JSON.stringify({ resourceSpans: [{ scopeSpans: [{ spans: rows }] }] }) + '\n');
+  const sessions = await copilotCliOtelParser.parseFile(path);
+  assert.ok(sessions);
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].sessionId, 'cli-session');
+  assert.equal(sessions[0].tokens.input, 65);
+  assert.equal(sessions[0].tokens.cacheRead, 30);
+  assert.equal(sessions[0].tokens.cacheWrite, 5);
+  assert.equal(sessions[0].costUsd, 0.01);
+  assert.equal(sessions[0].costSource, 'actual');
 });
 
 test('copilot-cli: sums output tokens, counts turns, leaves input/cost unknown', async () => {

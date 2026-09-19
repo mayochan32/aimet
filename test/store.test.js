@@ -50,6 +50,50 @@ test('store: idempotent upsert (insert -> skip -> update)', () => {
   store.close();
 });
 
+test('store: OTel replaces lower-detail Copilot logs and groups by provider', () => {
+  const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-')), 'm.db');
+  const store = new Store(db);
+  store.upsert(sampleMetrics({
+    tool: 'copilot', sessionId: 'byok-provider-session',
+    logPath: '/x/GitHub.copilot-chat/debug-logs/byok-provider-session/main.jsonl',
+    model: 'claude-sonnet-4-6', provider: 'unknown',
+    tokens: { input: 100, output: 10, cacheRead: 20, cacheWrite: null, reasoning: null },
+  }));
+  assert.equal(store.upsert(sampleMetrics({
+    tool: 'copilot', sessionId: 'byok-provider-session',
+    logPath: '/x/github.copilot-chat/agent-traces.db',
+    model: 'claude-sonnet-4-6', accessMode: 'byok',
+    provider: 'anthropic', serverAddress: 'api.anthropic.com',
+    tokens: { input: 80, output: 10, cacheRead: 20, cacheWrite: 5, reasoning: 2 },
+  })), 'updated');
+
+  const stored = store.query('SELECT access_mode, provider, server_address, cache_write_tokens, reasoning_tokens FROM sessions')[0];
+  assert.deepEqual({ ...stored }, {
+    access_mode: 'byok',
+    provider: 'anthropic', server_address: 'api.anthropic.com',
+    cache_write_tokens: 5, reasoning_tokens: 2,
+  });
+  const grouped = reportRows(store, { by: 'model' });
+  assert.equal(grouped.length, 1);
+  assert.equal(grouped[0].tool, 'copilot');
+  assert.equal(grouped[0].access_mode, 'byok');
+  assert.equal(grouped[0].provider, 'anthropic');
+  store.close();
+});
+
+test('store: explicitly supplied OTel path keeps precedence without a standard filename', () => {
+  const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-')), 'm.db');
+  const store = new Store(db);
+  store.upsert(sampleMetrics({ tool: 'copilot', logPath: '/logs/old/main.jsonl',
+    metricScope: 'own', sessionId: 'one' }));
+  assert.equal(store.upsert(sampleMetrics({ tool: 'copilot', logPath: '/logs/custom-export.jsonl',
+    metricScope: 'tree', sessionId: 'one', model: 'gpt-5-nano' })), 'updated');
+  assert.equal(store.upsert(sampleMetrics({ tool: 'copilot', logPath: '/logs/old/main.jsonl',
+    metricScope: 'own', sessionId: 'one', model: 'gpt-5' })), 'skipped');
+  assert.equal(store.query('SELECT model FROM sessions')[0].model, 'gpt-5-nano');
+  store.close();
+});
+
 test('store migration adds project provenance and allows an exact later upgrade', () => {
   const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-')), 'm.db');
   const oldRow = sampleMetrics({
@@ -83,9 +127,11 @@ test('store migration adds project provenance and allows an exact later upgrade'
   raw.close();
 
   const migrated = new Store(db);
-  assert.equal(migrated.query(
-    'SELECT project_source FROM sessions WHERE session_id = ?', 'migrated-project'
-  )[0].project_source, 'legacy');
+  const migratedRow = migrated.query(
+    'SELECT project_source, access_mode FROM sessions WHERE session_id = ?', 'migrated-project'
+  )[0];
+  assert.equal(migratedRow.project_source, 'legacy');
+  assert.equal(migratedRow.access_mode, 'copilot', 'legacy actual-credit Copilot rows are backfilled');
   assert.equal(migrated.upsert({
     ...oldRow,
     project: '/exact/project',
@@ -130,6 +176,7 @@ test('store migration removes ended_at while preserving last observed session da
   const cols = migrated.query('PRAGMA table_info(sessions)').map((r) => r.name);
   assert.equal(cols.includes('ended_at'), false);
   assert.equal(cols.includes('last_event_at'), true);
+  assert.equal(cols.includes('access_mode'), true);
   const row = migrated.query('SELECT * FROM sessions WHERE session_id = ?', 'legacy-ended-row')[0];
   assert.equal(row.started_at, '2026-08-25T00:00:00.000Z');
   assert.equal(row.last_event_at, '2026-08-25T00:10:00.000Z');
