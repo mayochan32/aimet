@@ -413,6 +413,12 @@ npm test
 
 すべての修正とリリースでは、変更対象がモデル処理であるかどうかにかかわらず、作業時点の[OpenAI公式モデル一覧](https://developers.openai.com/api/docs/models)、[OpenAI公式料金](https://openai.com/api/pricing/)、[Anthropic公式料金](https://platform.claude.com/docs/en/about-claude/pricing)、[GitHub Copilot公式モデル別課金](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing)を確認します。モデルID、別名、input / output / cache read / cache write、長文・高速・地域別などの条件付き料金を`src/pricing.ts`と照合し、変更がなくても確認日をPRまたは作業記録へ残してください。手順の詳細は[CONTRIBUTING.md](CONTRIBUTING.md)に記載しています。
 
+さらにGitHub Actionsの`Weekly model and metrics monitor`が、毎週月曜10:37（日本時間）を予定時刻として公式のモデル・料金・変更履歴・OTel資料を前回取得時と比較し、fixtureテストを実行します。**変更候補がない週も含めて毎回**、新しい`aimet 週次監視レポート` Issueを作り、リポジトリ所有者を担当者に設定して直接メンションします。初回は比較元を記録するだけです。資料の取得失敗やテスト失敗は「変更なし」ではなく「確認未完了」と報告します。GitHub Actionsはユーザーのローカル実ログを読めないため、実ログでの適合性確認は別途必要です。資料本文の差分は調査のきっかけであり、モデル・料金変更の確定ではありません。単価表・集計ロジック・PRのマージは自動で変更しません。
+
+週次Issueの通知を**GitHub Mobileプッシュとメールの両方**で受け取るには、GitHubアカウントの[通知設定](https://github.com/settings/notifications)で`Participating`の`On GitHub`と`Email`を有効にし、GitHub Mobileの`Profile → Settings → Notifications`で`Direct mentions`または`Assignments`のプッシュを有効にしてください。端末OS側のGitHub Mobile通知許可も必要です。監視処理自体がIssue投稿前に失敗した場合に備え、GitHubの通知設定にある`System → Actions`も`Email`と`Only notify for failed workflows`に設定することを推奨します。[GitHub通知の公式説明](https://docs.github.com/en/subscriptions-and-notifications/get-started/configuring-notifications)、[Actions失敗通知の公式説明](https://docs.github.com/en/subscriptions-and-notifications/how-tos/managing-github-actions-notifications)。
+
+GitHub Actionsの予定時刻は厳密な実行保証ではなく、負荷によって遅延・実行されない場合があります。また、公開リポジトリでは活動が60日間ないと定期実行が自動無効化される場合があります。予定した週にIssueが届かなければ、[Actions画面](https://github.com/mayochan32/aimet/actions)でワークフローの状態を確認し、必要なら再有効化してください。[GitHubのschedule仕様](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)。
+
 パーサ、DB更新、集計、セキュリティ、macOS/Windowsのパス解決をfixtureベースで自動検証します。さらに、Windows実機でVS Code Copilotのシングル／マルチエージェントを起動し、生ログとDBを独立した検算器で照合するE2Eスクリプトも用意しています（VS CodeへのサインインとCopilotの利用権が必要）。
 
 ```powershell

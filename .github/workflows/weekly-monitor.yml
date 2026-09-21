@@ -1,0 +1,36 @@
+name: Weekly model and metrics monitor
+
+on:
+  schedule:
+    # Monday 10:37 JST (GitHub Actions cron uses UTC).
+    - cron: '37 1 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: aimet-weekly-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+      - id: install
+        run: npm ci
+      - id: test
+        if: steps.install.outcome == 'success'
+        run: npm test
+      - name: Post weekly report
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AIMET_MONITOR_RECIPIENT: mayochan32
+          AIMET_MONITOR_TEST_RESULT: ${{ steps.test.outcome }}
+        run: node scripts/weekly-monitor.mjs
