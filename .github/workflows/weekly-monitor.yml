@@ -2,8 +2,8 @@ name: Weekly model and metrics monitor
 
 on:
   schedule:
-    # Monday 10:37 JST (GitHub Actions cron uses UTC).
-    - cron: '37 1 * * 1'
+    # Monday 22:00 JST (GitHub Actions cron uses UTC).
+    - cron: '0 13 * * 1'
   workflow_dispatch:
 
 permissions:
