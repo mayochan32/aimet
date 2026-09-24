@@ -234,6 +234,36 @@ test('copilot: estimated cost bills cached context at the cache-read rate', asyn
   assert.equal(m.costUsd, 0.0162);
 });
 
+test('copilot: recognizes a qualified Custom Endpoint model as BYOK', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-copilot-customendpoint-'));
+  const path = join(root, 'session.jsonl');
+  writeFileSync(path, JSON.stringify({
+    kind: 0,
+    v: {
+      sessionId: 'customendpoint-chat',
+      creationDate: 1783373827000,
+      requests: [{
+        timestamp: 1783373827000,
+        promptTokens: 1000,
+        completionTokens: 100,
+        copilotCredits: 0,
+        modelId: 'customendpoint/gpt-5-nano',
+        result: { metadata: { resolvedModel: 'gpt-5-nano-2025-08-07' } },
+        modelState: { completedAt: 1783373828000 },
+      }],
+    },
+  }) + '\n');
+
+  const m = await copilotParser.parseFile(path);
+  assert.ok(m);
+  assert.equal(m.model, 'gpt-5-nano-2025-08-07');
+  assert.equal(m.accessMode, 'byok');
+  assert.equal(m.provider, 'custom');
+  assert.equal(m.costSource, 'estimated');
+  assert.equal(m.estimated, true);
+  assert.ok(m.costUsd > 0, 'BYOK uses provider-side API-equivalent pricing');
+});
+
 test('copilot: Delete removes an ObjectMutationLog request', async () => {
   const { writeFileSync, mkdtempSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
@@ -414,6 +444,30 @@ test('copilot subagent: exact AIU wins, zero AIU is actual, duplicate span is ig
   assert.equal(m.costSource, 'actual');
   assert.equal(m.metricScope, 'own');
   assert.equal(m.accessMode, 'copilot');
+});
+
+test('copilot subagent: Custom Endpoint prefix overrides a zero AIU attribute', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-copilot-subagent-customendpoint-'));
+  const path = join(root, 'main.jsonl');
+  writeFileSync(path, [
+    { v: 1, ts: 1783373827000, dur: 0, sid: 'customendpoint-parent', type: 'session_start', attrs: {} },
+    { v: 1, ts: 1783373827100, dur: 1000, sid: 'customendpoint-parent', type: 'llm_request', spanId: 'customendpoint-span', attrs: {
+      inputTokens: 1000,
+      cachedTokens: 400,
+      outputTokens: 100,
+      copilotUsageNanoAiu: 0,
+      modelId: 'customendpoint/gpt-5-nano',
+      model: 'gpt-5-nano-2025-08-07',
+    } },
+  ].map(JSON.stringify).join('\n') + '\n');
+
+  const m = await copilotSubagentParser.parseFile(path);
+  assert.ok(m);
+  assert.equal(m.model, 'gpt-5-nano-2025-08-07');
+  assert.equal(m.accessMode, 'byok');
+  assert.equal(m.provider, 'custom');
+  assert.equal(m.costSource, 'estimated');
+  assert.ok(m.costUsd > 0);
 });
 
 test('copilot subagent: combines exact AIU with per-request fallback as mixed', async () => {
@@ -654,6 +708,75 @@ test('copilot OTel: a direct custom endpoint is BYOK even when provider is unava
   assert.ok(sessions);
   assert.equal(sessions[0].accessMode, 'byok');
   assert.equal(sessions[0].provider, 'custom');
+});
+
+test('copilot OTel SQLite: Custom Endpoint request id survives missing route attributes', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-copilot-otel-customendpoint-db-'));
+  const path = join(root, 'agent-traces.db');
+  const db = new DatabaseSync(path);
+  db.exec(`
+    CREATE TABLE spans (
+      span_id TEXT PRIMARY KEY, trace_id TEXT NOT NULL, parent_span_id TEXT,
+      name TEXT NOT NULL, start_time_ms INTEGER NOT NULL, end_time_ms INTEGER NOT NULL,
+      status_code INTEGER NOT NULL DEFAULT 0, status_message TEXT,
+      operation_name TEXT, provider_name TEXT, agent_name TEXT, conversation_id TEXT,
+      request_model TEXT, response_model TEXT,
+      input_tokens INTEGER, output_tokens INTEGER, cached_tokens INTEGER, reasoning_tokens INTEGER,
+      tool_name TEXT, tool_call_id TEXT, tool_type TEXT,
+      chat_session_id TEXT, turn_index INTEGER, ttft_ms REAL
+    );
+    CREATE TABLE span_attributes (
+      span_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT,
+      PRIMARY KEY (span_id, key)
+    );
+    INSERT INTO spans (
+      span_id, trace_id, name, start_time_ms, end_time_ms, operation_name,
+      provider_name, conversation_id, request_model, response_model,
+      input_tokens, output_tokens, cached_tokens, reasoning_tokens
+    ) VALUES (
+      'customendpoint', 'trace-customendpoint', 'chat gpt-5-nano',
+      1783373827000, 1783373828000, 'chat', 'github', 'customendpoint-db-session',
+      'customendpoint/gpt-5-nano', 'gpt-5-nano-2025-08-07', 1000, 100, 400, NULL
+    );
+    INSERT INTO span_attributes (span_id, key, value)
+    VALUES ('customendpoint', 'copilot_chat.copilot_usage_nano_aiu', '0');
+  `);
+  db.close();
+
+  const sessions = await copilotOtelParser.parseFile(path);
+  assert.ok(sessions);
+  assert.equal(sessions.length, 1);
+  const m = sessions[0];
+  assert.equal(m.model, 'gpt-5-nano-2025-08-07');
+  assert.equal(m.accessMode, 'byok');
+  assert.equal(m.provider, 'custom');
+  assert.equal(m.costSource, 'estimated');
+  assert.ok(m.costUsd > 0);
+});
+
+test('copilot OTel: positive Copilot credits conflicting with BYOK stay unpriced', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-copilot-otel-customendpoint-conflict-'));
+  const path = join(root, 'copilot-otel.jsonl');
+  writeFileSync(path, JSON.stringify({
+    _spanContext: { traceId: 'trace-conflict', spanId: 'span-conflict' },
+    startTime: [1783373827, 0],
+    duration: [1, 0],
+    attributes: {
+      'gen_ai.operation.name': 'chat',
+      'gen_ai.conversation.id': 'customendpoint-conflict-session',
+      'gen_ai.request.model': 'customendpoint/gpt-5-nano',
+      'gen_ai.response.model': 'gpt-5-nano-2025-08-07',
+      'gen_ai.usage.input_tokens': 10,
+      'gen_ai.usage.output_tokens': 2,
+      'copilot_chat.copilot_usage_nano_aiu': 1000000000,
+    },
+  }) + '\n');
+
+  const sessions = await copilotOtelParser.parseFile(path);
+  assert.ok(sessions);
+  assert.equal(sessions[0].accessMode, 'mixed');
+  assert.equal(sessions[0].provider, 'custom');
+  assert.equal(sessions[0].costUsd, null);
 });
 
 test('copilot CLI OTel: parent/child calls count tokens once and root credits once', async () => {

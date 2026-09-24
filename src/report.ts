@@ -140,7 +140,7 @@ function providerLabel(provider: unknown): string {
   const value = String(provider ?? 'unknown');
   const labels: Record<string, string> = {
     openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemini',
-    openrouter: 'OpenRouter', xai: 'xAI', 'azure.ai.openai': 'Azure OpenAI',
+    openrouter: 'OpenRouter', xai: 'xAI', ollama: 'Ollama', 'azure.ai.openai': 'Azure OpenAI',
     github: 'GitHub', custom: 'Custom', mixed: 'Mixed', unknown: 'Unknown',
   };
   return labels[value.toLowerCase()] ?? value;

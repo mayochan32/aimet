@@ -2,10 +2,11 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import type { Parser, ProjectSource, SessionMetrics, TokenUsage } from '../types.js';
-import { copilotCostUsd } from '../pricing.js';
+import type { AccessMode, Parser, ProjectSource, SessionMetrics, TokenUsage } from '../types.js';
+import { copilotCostUsd, costUsd } from '../pricing.js';
 import { jsonlRecords } from './util.js';
 import { copilotWorkspaceRoots } from '../paths.js';
+import { copilotModelIdentity } from './copilotmodel.js';
 
 /**
  * GitHub Copilot Chat (VS Code) session logs:
@@ -352,6 +353,8 @@ export const copilotParser: Parser = {
     const timestamps: number[] = [];
     let model = '';
     const models = new Set<string>();
+    const accessModes = new Set<AccessMode>();
+    const providers = new Set<string>();
     let actualCost = 0;
     let estimatedCost = 0;
     let actualRequests = 0;
@@ -378,19 +381,26 @@ export const copilotParser: Parser = {
       tokens.output = (tokens.output ?? 0) + (finite(r.completionTokens) ?? 0);
       if (typeof r.elapsedMs === 'number') activeMs += r.elapsedMs;
       const md = ((r.result as Record<string, unknown>)?.metadata ?? {}) as Record<string, unknown>;
-      if (typeof md.resolvedModel === 'string') model = md.resolvedModel;
-      else if (typeof r.modelId === 'string' && !model) model = r.modelId;
-      const requestModel = typeof md.resolvedModel === 'string'
-        ? md.resolvedModel
-        : typeof r.modelId === 'string' ? r.modelId : model;
-      if (requestModel) models.add(requestModel);
       const requestCredits = finite(r.copilotCredits);
-      if (requestCredits !== null) {
+      const identity = copilotModelIdentity({
+        requestModel: typeof r.modelId === 'string' ? r.modelId : model,
+        responseModel: md.resolvedModel,
+        credits: requestCredits,
+      });
+      model = identity.model;
+      if (model !== 'unknown') models.add(model);
+      if (identity.accessMode !== 'unknown') accessModes.add(identity.accessMode);
+      if (identity.provider !== 'unknown') providers.add(identity.provider);
+      if (identity.accessMode === 'mixed') {
+        unknownCost = true;
+        estimatedRequests++;
+      } else if (requestCredits !== null && identity.accessMode === 'copilot') {
         actualCost += requestCredits * 0.01;
         actualRequests++;
       } else {
-        const estimated = requestModel
-          ? copilotCostUsd(requestModel, { input: Math.max(0, prompt - cached), output: finite(r.completionTokens) ?? 0, cacheRead: hasCacheDetails ? cached : null, cacheWrite: null, reasoning: null })
+        const price = identity.accessMode === 'byok' ? costUsd : copilotCostUsd;
+        const estimated = model !== 'unknown'
+          ? price(model, { input: Math.max(0, prompt - cached), output: finite(r.completionTokens) ?? 0, cacheRead: hasCacheDetails ? cached : null, cacheWrite: null, reasoning: null })
           : null;
         if (estimated === null) unknownCost = true;
         else estimatedCost += estimated;
@@ -409,6 +419,12 @@ export const copilotParser: Parser = {
     const last = timestamps[timestamps.length - 1];
 
     const projectInfo = projectInfoOf(path, (s.sessionId as string) || basename(path, '.jsonl'));
+    const accessMode: AccessMode = accessModes.size === 0
+      ? 'unknown'
+      : accessModes.size === 1 ? [...accessModes][0] : 'mixed';
+    const provider = providers.size === 0
+      ? 'unknown'
+      : providers.size === 1 ? [...providers][0] : 'mixed';
     return {
       tool: 'copilot',
       sessionId: (s.sessionId as string) || basename(path, '.jsonl'),
@@ -416,7 +432,8 @@ export const copilotParser: Parser = {
       project: projectInfo.project,
       projectSource: projectInfo.source,
       model: models.size > 1 ? 'mixed' : (model || 'unknown'),
-      accessMode: actualRequests > 0 ? 'copilot' : 'unknown',
+      accessMode,
+      provider,
       startedAt: iso(first),
       durationSec: Math.round((last - first) / 1000),
       activeSec: Math.round(activeMs / 1000),

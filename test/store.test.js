@@ -50,6 +50,38 @@ test('store: idempotent upsert (insert -> skip -> update)', () => {
   store.close();
 });
 
+test('store: same-source reparse updates corrected parser semantics', () => {
+  const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-reparse-')), 'm.db');
+  const store = new Store(db);
+  const original = sampleMetrics({
+    tool: 'copilot',
+    sessionId: 'customendpoint-reparse',
+    logPath: '/logs/customendpoint.jsonl',
+    model: 'customendpoint/gpt-5-nano',
+    accessMode: 'unknown',
+    provider: 'unknown',
+    costUsd: null,
+    estimated: true,
+  });
+  assert.equal(store.upsert(original), 'inserted');
+  assert.equal(store.upsert({
+    ...original,
+    model: 'gpt-5-nano',
+    accessMode: 'byok',
+    provider: 'custom',
+    costUsd: 0.001,
+  }), 'updated');
+
+  const stored = store.query(
+    `SELECT model, access_mode, provider, cost_usd FROM sessions
+     WHERE tool = 'copilot' AND session_id = 'customendpoint-reparse'`
+  )[0];
+  assert.deepEqual({ ...stored }, {
+    model: 'gpt-5-nano', access_mode: 'byok', provider: 'custom', cost_usd: 0.001,
+  });
+  store.close();
+});
+
 test('store: OTel replaces lower-detail Copilot logs and groups by provider', () => {
   const db = join(mkdtempSync(join(tmpdir(), 'aimet-db-')), 'm.db');
   const store = new Store(db);
