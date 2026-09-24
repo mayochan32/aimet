@@ -5,6 +5,7 @@ import { costUsd, copilotCostUsd } from '../pricing.js';
 import { copilotWorkspaceRoots } from '../paths.js';
 import { jsonlRecords } from './util.js';
 import { projectInfoOf } from './copilot.js';
+import { copilotModelIdentity } from './copilotmodel.js';
 
 /**
  * VS Code Copilot Chat OpenTelemetry sources.
@@ -86,57 +87,6 @@ function stringValue(value: unknown): string {
   return typeof value === 'string' && value.trim() ? value.trim() : '';
 }
 
-function serverHost(serverAddress: string | null): string {
-  return (serverAddress ?? '')
-    .toLowerCase()
-    .replace(/^https?:\/\//, '')
-    .split('/')[0]
-    .split(':')[0];
-}
-
-function isCopilotHost(host: string): boolean {
-  return host === 'github.com' || host.endsWith('.github.com') ||
-    host === 'githubcopilot.com' || host.endsWith('.githubcopilot.com');
-}
-
-/**
- * Route evidence is intentionally independent from provider normalization.
- * Credits prove Copilot billing; a non-GitHub endpoint proves a direct/BYOK
- * request even when VS Code incorrectly reports provider=github.
- */
-function accessModeOf(
-  reportedProvider: unknown,
-  serverAddress: string | null,
-  creditsNano: number | null
-): AccessMode {
-  const host = serverHost(serverAddress);
-  if (host && !isCopilotHost(host)) return 'byok';
-  if (creditsNano !== null) return 'copilot';
-  const reported = stringValue(reportedProvider).toLowerCase();
-  if (reported && reported !== 'unknown' && reported !== 'github') return 'byok';
-  if (reported === 'github' || isCopilotHost(host)) return 'copilot';
-  return 'unknown';
-}
-
-/**
- * VS Code 1.136 can label a direct BYOK call as provider=github even though
- * server.address points at the user's provider. Prefer a recognized direct
- * provider endpoint in that case; keep explicit non-GitHub providers intact.
- */
-function providerOf(value: unknown, serverAddress: string | null): string {
-  const reported = stringValue(value) || 'unknown';
-  if (reported !== 'github' && reported !== 'unknown') return reported;
-  const host = serverHost(serverAddress);
-  if (host === 'api.openai.com' || host.endsWith('.openai.com')) return 'openai';
-  if (host === 'api.anthropic.com' || host.endsWith('.anthropic.com')) return 'anthropic';
-  if (host === 'generativelanguage.googleapis.com') return 'gemini';
-  if (host === 'openrouter.ai' || host.endsWith('.openrouter.ai')) return 'openrouter';
-  if (host === 'api.x.ai' || host.endsWith('.x.ai')) return 'xai';
-  if (host.endsWith('.openai.azure.com')) return 'azure.ai.openai';
-  if (host && !isCopilotHost(host)) return 'custom';
-  return reported;
-}
-
 function explicitOtelPaths(): string[] {
   return [process.env.AIMET_COPILOT_OTEL_FILE]
     .filter((v): v is string => typeof v === 'string' && Boolean(v.trim()))
@@ -195,13 +145,20 @@ function sqliteObservations(path: string): Observation[] | null {
       const sessionId = row.root_session_id ?? row.conversation_id ?? row.chat_session_id;
       if (!sessionId) continue;
       const creditsNano = finite(row.credits_nano);
+      const identity = copilotModelIdentity({
+        requestModel: row.request_model,
+        responseModel: row.response_model,
+        reportedProvider: row.provider_name,
+        serverAddress: row.server_address,
+        credits: creditsNano,
+      });
       observations.push({
         key: row.span_id,
         traceId: row.trace_id,
         sessionId,
-        accessMode: accessModeOf(row.provider_name, row.server_address, creditsNano),
-        provider: providerOf(row.provider_name, row.server_address),
-        model: row.response_model ?? row.request_model ?? 'unknown',
+        accessMode: identity.accessMode,
+        provider: identity.provider,
+        model: identity.model,
         serverAddress: row.server_address,
         startMs: Number(row.start_time_ms),
         endMs: Number(row.end_time_ms),
@@ -289,14 +246,21 @@ function observationFromJson(
   if (!sessionId) return null;
   const serverAddress = stringValue(attrs[ATTR.server]) || null;
   const creditsNano = finite(attrs[ATTR.creditsNanoCanonical] ?? attrs[ATTR.creditsNano]);
+  const identity = copilotModelIdentity({
+    requestModel: attrs[ATTR.requestModel],
+    responseModel: attrs[ATTR.responseModel],
+    reportedProvider: attrs[ATTR.provider],
+    serverAddress,
+    credits: creditsNano,
+  });
 
   return {
     key: spanId || responseId || `${sessionId}:${startMs}:${index}`,
     traceId,
     sessionId,
-    accessMode: accessModeOf(attrs[ATTR.provider], serverAddress, creditsNano),
-    provider: providerOf(attrs[ATTR.provider], serverAddress),
-    model: stringValue(attrs[ATTR.responseModel] ?? attrs[ATTR.requestModel]) || 'unknown',
+    accessMode: identity.accessMode,
+    provider: identity.provider,
+    model: identity.model,
     serverAddress,
     startMs,
     endMs,
@@ -450,7 +414,12 @@ function aggregate(
       allReasoningKnown &&= row.reasoning !== null;
       activeMs += Math.max(0, row.endMs - row.startMs);
 
-      if (tool === 'copilot' && row.creditsNano !== null && row.accessMode === 'copilot') {
+      if (row.accessMode === 'mixed') {
+        // Contradictory route evidence (for example a local-BYOK identifier
+        // with positive Copilot credits) is not safe to price automatically.
+        unknownCost = true;
+        estimatedRequests++;
+      } else if (tool === 'copilot' && row.creditsNano !== null && row.accessMode === 'copilot') {
         actualCost += row.creditsNano / 1e9 * 0.01;
         actualRequests++;
       } else {

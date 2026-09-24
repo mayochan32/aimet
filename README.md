@@ -227,11 +227,23 @@ aimet collect --tool copilot --dir /absolute/path/copilot-otel.jsonl
 
 `aimet report` / `sessions` / `session`の人間向け表示（Markdownを含む）では、対象にOTel以外のCopilotログがあると設定案内を表示します。これは「その行をOTelから取得できていない」という判断であり、VS CodeやCLIの**現在の設定値を直接読み取った判定ではありません**。すでにOTelを有効化していても、過去ログだけを集計する場合は表示されます。JSON出力には混ぜません。VS Code側は上記の`dbSpanExporter.enabled`、CLI側は`COPILOT_OTEL_FILE_EXPORTER_PATH`を設定します。
 
-VS Code 1.136では、OpenAI BYOKの`chat`スパンでも`gen_ai.provider.name=github`と記録される場合があります。aimetはその場合に限り`server.address`（例: `api.openai.com`）から直接接続先を判定します。また、タイトル生成や進捗文生成など会話IDを持たない内部`chat`スパンは利用者セッションへ数えません。
+VS Code 1.136では、OpenAI BYOKの`chat`スパンでも`gen_ai.provider.name=github`と記録される場合があります。さらにCustom EndpointなどのローカルBYOKモデルは、VS Codeの識別子として`<vendor>/<id>`または`<vendor>/<group>/<id>`形式でログに現れることがあります。例は`customendpoint/gpt-5`です。aimetはrequest modelとresponse modelを両方確認し、response側が`gpt-5-2025-08-07`のような解決後名だけでも、request側のBYOK経路を失いません。タイトル生成や進捗文生成など会話IDを持たない内部`chat`スパンは利用者セッションへ数えません。
 
-aimetはモデルIDとは別に`access_mode`を保存します。`byok` / `copilot` / `mixed` / `unknown`の4値で、Copilot creditsの記録があれば`copilot`、GitHub以外のAPI endpointへの直接接続が確認できれば`byok`と判定します。providerは必ず取得できるわけではなく、カスタムendpointでは`custom`、根拠不足では`unknown`になります。そのためBYOK判定はprovider名だけに依存しません。
+aimetはモデルIDとは別に`access_mode`を保存します。`byok` / `copilot` / `mixed` / `unknown`の4値です。BYOKとCopilot経由を判定する根拠は、次の優先順位で使います。
 
-人間向けの標準出力とMarkdownでは、BYOKと確認できた場合だけ`gpt-5 [BYOK/OpenAI]`のようにモデル名へ付記します。Copilot提供モデル、経路不明、Copilot以外のツールは通常のモデル名のままです。`access`・`provider`の独立列は表示しません。DBとJSONでは機械利用向けに`model`、`access_mode`、`provider`を分離して保持します。
+1. 既知のローカルBYOK vendor接頭辞を持つrequest / response model
+2. GitHub以外の`server.address`
+3. GitHub以外の`gen_ai.provider.name`
+4. 正のCopilot AI Credits
+5. GitHub providerまたはGitHub CopilotのAPIホスト
+
+接頭辞はVS Codeの組み込みBYOK vendorだけを許可し、`openai/`、`anthropic/`、`gemini/`、`ollama/`、`openrouter/`、`azure/`、`xai/`、`customoai/`（旧形式）、`customendpoint/`を識別します。任意の`xxx/`はBYOK根拠にしません。`customendpoint/`がある場合、値0のAI Credits属性はBYOK判定を上書きしません。一方、BYOK接頭辞と正のAI Creditsが同じリクエストにある場合は根拠が矛盾するため`mixed`とし、誤ったコストは自動計算しません。この共通判定はOTel SQLite / JSONL、通常のCopilot Chatセッション、親・サブエージェントのdebug JSONLのすべてに適用します。
+
+providerは必ず取得できるわけではありません。`customendpoint/`だけが判明した場合は`custom`、`server.address=api.openai.com`も記録されていれば`openai`のように、取得できる根拠の範囲でより具体的なproviderを使います。Custom EndpointはAPI形式でありOpenAIとは限らないため、接続先不明時にOpenAIとは推測しません。
+
+人間向けの標準出力とMarkdownでは、BYOKと確認できた場合だけ`gpt-5 [BYOK/OpenAI]`または`gpt-5 [BYOK/Custom]`のようにモデル名へ付記します。既知vendorの接頭辞は表示と料金照合の前に取り除きます。ただし`<vendor>/<group>/<id>`形式でresponse modelがない場合、groupとIDの境界を推測せず、vendor以降をそのまま残します。Copilot提供モデル、経路不明、Copilot以外のツールは通常のモデル名のままです。`access`・`provider`の独立列は表示しません。DBとJSONでは機械利用向けに`model`、`access_mode`、`provider`を分離して保持します。
+
+過去に取り込んだ`customendpoint/`ログは、更新後に通常どおり`aimet collect --tool copilot`を再実行すると再解析されます。元ログがVS Codeの整理済みで残っていないセッションは、経路を後から復元できません。
 
 参照: [VS Code: Monitor agent usage with OpenTelemetry](https://code.visualstudio.com/docs/agents/guides/monitoring-agents)、[VS Code: AI language models / BYOK](https://code.visualstudio.com/docs/agent-customization/language-models)、[GitHub: Bring your own key for GitHub Copilot](https://docs.github.com/en/copilot/concepts/models/bring-your-own-key)
 
@@ -558,7 +570,7 @@ aimet <command> [options]
 
 ```console
 $ aimet --version
-2.3.0
+2.3.1
 ```
 
 実行中のaimetと同じ配布パッケージの`package.json`からバージョンを表示します。複数PCや複数ユーザーで調査する場合は、不具合報告にこの出力を含めてください。

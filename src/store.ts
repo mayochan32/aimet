@@ -45,6 +45,53 @@ function projectSourceRank(source: string | undefined | null): number {
   }
 }
 
+type ExistingSession = {
+  last_event_at: string;
+  log_path: string;
+  project: string;
+  project_source: string;
+  model: string;
+  access_mode: string;
+  provider: string;
+  server_address: string | null;
+  started_at: string;
+  duration_sec: number;
+  active_sec: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
+  reasoning_tokens: number | null;
+  cost_usd: number | null;
+  estimated: number;
+  metric_scope: string;
+  cost_source: string;
+  turns: number;
+  parent_session_id: string | null;
+};
+
+/** A same-source reparse may legitimately change when parser semantics improve. */
+function sameParsedMetrics(existing: ExistingSession, m: SessionMetrics): boolean {
+  return existing.model === m.model &&
+    existing.access_mode === (m.accessMode ?? 'unknown') &&
+    existing.provider === (m.provider ?? 'unknown') &&
+    existing.server_address === (m.serverAddress ?? null) &&
+    existing.started_at === m.startedAt &&
+    existing.duration_sec === m.durationSec &&
+    existing.active_sec === m.activeSec &&
+    existing.input_tokens === m.tokens.input &&
+    existing.output_tokens === m.tokens.output &&
+    existing.cache_read_tokens === m.tokens.cacheRead &&
+    existing.cache_write_tokens === m.tokens.cacheWrite &&
+    existing.reasoning_tokens === m.tokens.reasoning &&
+    existing.cost_usd === m.costUsd &&
+    existing.estimated === (m.estimated ? 1 : 0) &&
+    existing.metric_scope === (m.metricScope ?? (m.tool === 'copilot-cli' ? 'tree' : 'own')) &&
+    existing.cost_source === (m.costSource ?? (m.tool === 'copilot' && !m.estimated ? 'actual' : 'estimated')) &&
+    existing.turns === m.turns &&
+    existing.parent_session_id === (m.parentSessionId ?? null);
+}
+
 export class Store {
   private db: DatabaseSync;
 
@@ -250,15 +297,12 @@ export class Store {
   /** Idempotent upsert keyed by (tool, session_id); skips stale data. */
   upsert(m: SessionMetrics): 'inserted' | 'updated' | 'skipped' {
     const existing = this.db
-      .prepare('SELECT last_event_at, log_path, project, project_source, metric_scope, input_tokens FROM sessions WHERE tool = ? AND session_id = ?')
-      .get(m.tool, m.sessionId) as {
-        last_event_at: string;
-        log_path: string;
-        project: string;
-        project_source: string;
-        metric_scope: string;
-        input_tokens: number | null;
-      } | undefined;
+      .prepare(`SELECT last_event_at, log_path, project, project_source, model,
+          access_mode, provider, server_address, started_at, duration_sec, active_sec,
+          input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
+          cost_usd, estimated, metric_scope, cost_source, turns, parent_session_id
+        FROM sessions WHERE tool = ? AND session_id = ?`)
+      .get(m.tool, m.sessionId) as ExistingSession | undefined;
 
     // A child debug span has its own call id, while Copilot's session index is
     // keyed by the top-level parent id. Inherit only a known parent project.
@@ -320,7 +364,9 @@ export class Store {
           this.backfillChildProjects(m.tool, m.sessionId, project);
           return 'updated';
         }
-        return 'skipped';
+        const parserOutputChanged = existing.log_path === m.logPath &&
+          existing.last_event_at === m.lastEventAt && !sameParsedMetrics(existing, m);
+        if (!parserOutputChanged) return 'skipped';
       }
     }
     this.db

@@ -1,9 +1,10 @@
 import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
-import type { Parser, SessionMetrics, TokenUsage } from '../types.js';
-import { copilotCostUsd } from '../pricing.js';
+import type { AccessMode, Parser, SessionMetrics, TokenUsage } from '../types.js';
+import { copilotCostUsd, costUsd } from '../pricing.js';
 import { jsonlRecords } from './util.js';
+import { copilotModelIdentity } from './copilotmodel.js';
 import {
   collectKnownWorkspaceReferences,
   knownWorkspaceProjects,
@@ -146,6 +147,8 @@ export const copilotSubagentParser: Parser = {
     let label = '';
     let model = '';
     const models = new Set<string>();
+    const accessModes = new Set<AccessMode>();
+    const providers = new Set<string>();
     let turns = 0;
     let requests = 0;
     let firstTs = Infinity;
@@ -197,19 +200,28 @@ export const copilotSubagentParser: Parser = {
           tokens.input = (tokens.input ?? 0) + uncached;
           tokens.cacheRead = (tokens.cacheRead ?? 0) + cached;
           tokens.output = (tokens.output ?? 0) + output;
-          const requestModel = typeof attrs.model === 'string'
-            ? attrs.model
-            : typeof attrs.modelId === 'string' ? attrs.modelId : model;
-          if (requestModel) model = requestModel;
-          if (requestModel) models.add(requestModel);
           const nano = finite(attrs.copilotUsageNanoAiu);
           const aiu = finite(attrs.aiu);
-          if (nano !== null || aiu !== null) {
+          const credits = nano !== null ? nano : aiu;
+          const identity = copilotModelIdentity({
+            requestModel: typeof attrs.modelId === 'string' ? attrs.modelId : model,
+            responseModel: attrs.model,
+            credits,
+          });
+          model = identity.model;
+          if (model !== 'unknown') models.add(model);
+          if (identity.accessMode !== 'unknown') accessModes.add(identity.accessMode);
+          if (identity.provider !== 'unknown') providers.add(identity.provider);
+          if (identity.accessMode === 'mixed') {
+            unknownCost = true;
+            estimatedRequests++;
+          } else if ((nano !== null || aiu !== null) && identity.accessMode === 'copilot') {
             actualCost += (nano !== null ? nano / 1e9 : aiu!) * 0.01;
             actualRequests++;
           } else {
-            const estimated = requestModel
-              ? copilotCostUsd(requestModel, { input: uncached, output, cacheRead: cached, cacheWrite: null, reasoning: null })
+            const price = identity.accessMode === 'byok' ? costUsd : copilotCostUsd;
+            const estimated = model !== 'unknown'
+              ? price(model, { input: uncached, output, cacheRead: cached, cacheWrite: null, reasoning: null })
               : null;
             if (estimated === null) unknownCost = true;
             else estimatedCost += estimated;
@@ -228,6 +240,12 @@ export const copilotSubagentParser: Parser = {
     const referencedProject = referencedProjects.size === 1
       ? [...referencedProjects][0]
       : 'unknown';
+    const accessMode: AccessMode = accessModes.size === 0
+      ? 'unknown'
+      : accessModes.size === 1 ? [...accessModes][0] : 'mixed';
+    const provider = providers.size === 0
+      ? 'unknown'
+      : providers.size === 1 ? [...providers][0] : 'mixed';
 
     return {
       tool: 'copilot',
@@ -240,7 +258,8 @@ export const copilotSubagentParser: Parser = {
         ? indexedProject.source
         : referencedProject !== 'unknown' ? 'structured-reference' : 'unknown',
       model: `${models.size > 1 ? 'mixed' : model || 'unknown'}${parentSessionId && label ? ` (${label})` : ''}`,
-      accessMode: actualRequests > 0 ? 'copilot' : 'unknown',
+      accessMode,
+      provider,
       startedAt: new Date(firstTs).toISOString(),
       durationSec: Math.round((lastTs - firstTs) / 1000),
       activeSec: Math.round(activeMs / 1000),
