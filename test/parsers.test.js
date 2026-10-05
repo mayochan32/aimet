@@ -108,7 +108,13 @@ test('codex: unknown model falls back to pricing but is flagged estimated', asyn
   assert.equal(m.estimated, true, 'guessed unit price must be flagged estimated');
 });
 
-test('codex: GPT-5.6 splits cache writes and prices each long-context request', async () => {
+for (const [model, expected, expectedMissingWrite] of [
+  ['gpt-5.6-sol', 2.05, 0.0212],
+  ['gpt-6-sol', 1.025, 0.0106],
+  ['gpt-6-luna', 0.05125, 0.00053],
+  ['gpt-6.1-sol', 1.0, 0.0098],
+]) {
+test(`codex: ${model} splits cache writes and prices each long-context request`, async () => {
   const root = mkdtempSync(join(tmpdir(), 'aimet-codex-gpt56-'));
   const path = join(root, 'rollout-2026-08-25T00-00-00-gpt56-pricing.jsonl');
   const first = {
@@ -135,7 +141,7 @@ test('codex: GPT-5.6 splits cache writes and prices each long-context request', 
       id: 'gpt56-pricing', session_id: 'gpt56-pricing', cwd: '/proj/gpt56',
     } },
     { timestamp: '2026-08-25T00:00:01.000Z', type: 'turn_context', payload: {
-      model: 'gpt-5.6-sol', cwd: '/proj/gpt56',
+      model, cwd: '/proj/gpt56',
     } },
     { timestamp: '2026-08-25T00:00:02.000Z', type: 'event_msg', payload: {
       type: 'token_count', info: { total_token_usage: first, last_token_usage: first },
@@ -153,11 +159,11 @@ test('codex: GPT-5.6 splits cache writes and prices each long-context request', 
   assert.equal(m.tokens.cacheWrite, 60_000);
   assert.equal(m.tokens.output, 1_500);
   assert.equal(m.tokens.reasoning, 150);
-  assert.equal(m.costUsd, 2.05);
+  assert.ok(Math.abs(m.costUsd - expected) < 1e-12);
   assert.equal(m.estimated, false);
 });
 
-test('codex: GPT-5.6 old rollout without cache-write detail is explicitly estimated', async () => {
+test(`codex: ${model} old rollout without cache-write detail is explicitly estimated`, async () => {
   const root = mkdtempSync(join(tmpdir(), 'aimet-codex-gpt56-old-'));
   const path = join(root, 'rollout-2026-08-25T00-00-00-gpt56-old.jsonl');
   const total = {
@@ -172,7 +178,7 @@ test('codex: GPT-5.6 old rollout without cache-write detail is explicitly estima
       id: 'gpt56-old', session_id: 'gpt56-old', cwd: '/proj/gpt56-old',
     } },
     { timestamp: '2026-08-25T00:00:01.000Z', type: 'turn_context', payload: {
-      model: 'gpt-5.6-sol', cwd: '/proj/gpt56-old',
+      model, cwd: '/proj/gpt56-old',
     } },
     { timestamp: '2026-08-25T00:00:02.000Z', type: 'event_msg', payload: {
       type: 'token_count', info: { total_token_usage: total, last_token_usage: total },
@@ -185,9 +191,11 @@ test('codex: GPT-5.6 old rollout without cache-write detail is explicitly estima
   assert.equal(m.tokens.input, 2_000);
   assert.equal(m.tokens.cacheRead, 8_000);
   assert.equal(m.tokens.cacheWrite, null);
-  assert.equal(m.costUsd, 0.0212);
+  assert.ok(Math.abs(m.costUsd - expectedMissingWrite) < 1e-12);
   assert.equal(m.estimated, true);
 });
+
+}
 
 test('copilot: reduces incremental diffs and prefers actual credit cost', async () => {
   const m = await copilotParser.parseFile(fx('copilot-basic.jsonl'));

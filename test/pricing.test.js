@@ -75,3 +75,52 @@ test('pricing: GPT-6, dated GPT-5 nano, and separate Copilot rates', () => {
   assert.equal(copilotCostUsd('gpt-6-astra', usage({ input: 1_000_000 })), 20);
   assert.equal(copilotCostUsd('gpt-6-unknown', usage({ input: 1_000 })), null);
 });
+
+test('pricing: September models price every token class and dated snapshots', () => {
+  const models = [
+    ['gpt-6-sol', [2, 10, 0.2, 2.5]],
+    ['gpt-6-luna', [0.1, 0.5, 0.01, 0.125]],
+    ['gpt-6.1-sol', [2, 10, 0.1, 2.5]],
+    ['claude-opus-5-5', [4, 20, 0.2, 5]],
+    ['claude-opus-5.5', [4, 20, 0.2, 5]],
+    ['claude-sonnet-5-5', [2, 10, 0.2, 2.5]],
+    ['claude-sonnet-5.5', [2, 10, 0.2, 2.5]],
+  ];
+  for (const [model, rates] of models) {
+    for (const id of [model, `${model}-20261001`]) {
+      for (const [i, field] of ['input', 'output', 'cacheRead', 'cacheWrite'].entries()) {
+        const tokens = usage({ [field]: 100_000 });
+        assert.equal(costUsd(id, tokens), rates[i] / 10, `${id}: ${field}`);
+        assert.equal(copilotCostUsd(id, tokens), rates[i] / 10, `Copilot ${id}: ${field}`);
+      }
+    }
+    assert.equal(costUsd(`${model}-future`, usage({ input: 1 })), null);
+    assert.equal(copilotCostUsd(`${model}-future`, usage({ input: 1 })), null);
+  }
+});
+
+test('pricing: new GPT models count cache tokens toward the 272K boundary', () => {
+  for (const model of ['gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol']) {
+    assert.equal(billsCacheWrites(`${model}-20261001`), true);
+    assert.equal(hasLongContextSurcharge(`${model}-20261001`), true);
+    const [input, output, read, write] = pricingTable()[model];
+    for (const price of [costUsd, copilotCostUsd]) {
+      assert.equal(price(model, usage({ input: 200_000, cacheRead: 70_000,
+        cacheWrite: 2_000, output: 1_000 })),
+      (200_000 * input + 70_000 * read + 2_000 * write + 1_000 * output) / 1e6);
+      assert.equal(price(model, usage({ input: 200_000, cacheRead: 70_000,
+        cacheWrite: 2_001, output: 1_000 })),
+      ((200_000 * input + 70_000 * read + 2_001 * write) * 2 + 1_000 * output * 1.5) / 1e6);
+    }
+  }
+  assert.equal(billsCacheWrites('gpt-6.2-sol'), false);
+  assert.equal(costUsd('gpt-6.2-sol', usage({ input: 1 })), null);
+});
+
+test('pricing: Copilot Grok 4.7 doubles input and output only above 200K', () => {
+  assert.equal(copilotCostUsd('grok-4.7', usage({ input: 100_000, cacheRead: 100_000,
+    output: 1_000 })), 0.256);
+  assert.equal(copilotCostUsd('grok-4.7-20261001', usage({ input: 100_001, cacheRead: 100_000,
+    output: 1_000 })), 0.512004);
+  assert.equal(costUsd('grok-4.7', usage({ input: 1_000 })), null, 'GitHub rates are not BYOK rates');
+});
