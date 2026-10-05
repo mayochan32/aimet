@@ -570,7 +570,7 @@ aimet <command> [options]
 
 ```console
 $ aimet --version
-2.3.1
+2.4.0
 ```
 
 実行中のaimetと同じ配布パッケージの`package.json`からバージョンを表示します。複数PCや複数ユーザーで調査する場合は、不具合報告にこの出力を含めてください。
