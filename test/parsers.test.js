@@ -108,7 +108,13 @@ test('codex: unknown model falls back to pricing but is flagged estimated', asyn
   assert.equal(m.estimated, true, 'guessed unit price must be flagged estimated');
 });
 
-test('codex: GPT-5.6 splits cache writes and prices each long-context request', async () => {
+for (const [model, expected, expectedMissingWrite] of [
+  ['gpt-5.6-sol', 2.05, 0.0212],
+  ['gpt-6-sol', 1.025, 0.0106],
+  ['gpt-6-luna', 0.05125, 0.00053],
+  ['gpt-6.1-sol', 1.0, 0.0098],
+]) {
+test(`codex: ${model} splits cache writes and prices each long-context request`, async () => {
   const root = mkdtempSync(join(tmpdir(), 'aimet-codex-gpt56-'));
   const path = join(root, 'rollout-2026-08-25T00-00-00-gpt56-pricing.jsonl');
   const first = {
@@ -135,7 +141,7 @@ test('codex: GPT-5.6 splits cache writes and prices each long-context request', 
       id: 'gpt56-pricing', session_id: 'gpt56-pricing', cwd: '/proj/gpt56',
     } },
     { timestamp: '2026-08-25T00:00:01.000Z', type: 'turn_context', payload: {
-      model: 'gpt-5.6-sol', cwd: '/proj/gpt56',
+      model, cwd: '/proj/gpt56',
     } },
     { timestamp: '2026-08-25T00:00:02.000Z', type: 'event_msg', payload: {
       type: 'token_count', info: { total_token_usage: first, last_token_usage: first },
@@ -153,11 +159,11 @@ test('codex: GPT-5.6 splits cache writes and prices each long-context request', 
   assert.equal(m.tokens.cacheWrite, 60_000);
   assert.equal(m.tokens.output, 1_500);
   assert.equal(m.tokens.reasoning, 150);
-  assert.equal(m.costUsd, 2.05);
+  assert.ok(Math.abs(m.costUsd - expected) < 1e-12);
   assert.equal(m.estimated, false);
 });
 
-test('codex: GPT-5.6 old rollout without cache-write detail is explicitly estimated', async () => {
+test(`codex: ${model} old rollout without cache-write detail is explicitly estimated`, async () => {
   const root = mkdtempSync(join(tmpdir(), 'aimet-codex-gpt56-old-'));
   const path = join(root, 'rollout-2026-08-25T00-00-00-gpt56-old.jsonl');
   const total = {
@@ -172,7 +178,7 @@ test('codex: GPT-5.6 old rollout without cache-write detail is explicitly estima
       id: 'gpt56-old', session_id: 'gpt56-old', cwd: '/proj/gpt56-old',
     } },
     { timestamp: '2026-08-25T00:00:01.000Z', type: 'turn_context', payload: {
-      model: 'gpt-5.6-sol', cwd: '/proj/gpt56-old',
+      model, cwd: '/proj/gpt56-old',
     } },
     { timestamp: '2026-08-25T00:00:02.000Z', type: 'event_msg', payload: {
       type: 'token_count', info: { total_token_usage: total, last_token_usage: total },
@@ -185,9 +191,11 @@ test('codex: GPT-5.6 old rollout without cache-write detail is explicitly estima
   assert.equal(m.tokens.input, 2_000);
   assert.equal(m.tokens.cacheRead, 8_000);
   assert.equal(m.tokens.cacheWrite, null);
-  assert.equal(m.costUsd, 0.0212);
+  assert.ok(Math.abs(m.costUsd - expectedMissingWrite) < 1e-12);
   assert.equal(m.estimated, true);
 });
+
+}
 
 test('copilot: reduces incremental diffs and prefers actual credit cost', async () => {
   const m = await copilotParser.parseFile(fx('copilot-basic.jsonl'));
@@ -834,4 +842,40 @@ test('copilot-cli: sums output tokens, counts turns, leaves input/cost unknown',
   assert.equal(m.tokens.reasoning, null);
   // Input unknown -> no meaningful API-equivalent cost.
   assert.equal(m.costUsd, null, 'cost must be null, not a misleading output-only figure');
+});
+
+test('claude: response speed prices each request and advisor independently, including cache TTL', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-claude-speed-'));
+  const file = join(root, 'speed.jsonl');
+  const usage = { input_tokens: 100_000, output_tokens: 10_000,
+    cache_read_input_tokens: 50_000, cache_creation_input_tokens: 3,
+    cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 3 } };
+  const record = (id, u, model = 'claude-opus-5-5') => ({
+    type: 'assistant', timestamp: '2026-10-06T00:00:00Z', sessionId: 'speed',
+    speed: 'fast', // Requested speed must not override the actual response speed.
+    message: { id, model, usage: u },
+  });
+  writeFileSync(file, [
+    record('a', { ...usage, speed: 'fast' }),
+    record('a', { ...usage, speed: 'fast' }), // duplicate must be counted once
+    record('b', { ...usage, speed: 'standard', iterations: [
+      { type: 'advisor_message', model: 'claude-opus-5', ...usage, speed: 'fast' },
+    ] }),
+  ].map(JSON.stringify).join('\n'));
+  const row = await claudeParser.parseFile(file);
+  // Opus 5.5: .610024 standard, 1.220048 fast; advisor Opus 5: 1.55006 fast.
+  assert.ok(Math.abs(row.costUsd - 3.380132) < 1e-12);
+  assert.equal(row.estimated, false);
+  assert.equal(row.tokens.cacheWrite, 9, 'stored counts remain actual, not TTL-equivalent tokens');
+
+  for (const speed of [undefined, null, 'future-speed']) {
+    writeFileSync(file, JSON.stringify(record('c', { ...usage, speed })));
+    const estimated = await claudeParser.parseFile(file);
+    assert.ok(Math.abs(estimated.costUsd - 0.610024) < 1e-12);
+    assert.equal(estimated.estimated, true);
+  }
+  writeFileSync(file, JSON.stringify(record('d', { ...usage, speed: 'fast' }, 'claude-sonnet-5')));
+  assert.equal((await claudeParser.parseFile(file)).costUsd, null, 'unsupported fast pricing is not guessed');
+  writeFileSync(file, JSON.stringify(record('e', { ...usage, speed: 'standard' }, 'claude-opus-4-6')));
+  assert.equal((await claudeParser.parseFile(file)).estimated, false, 'reported standard fallback is authoritative');
 });

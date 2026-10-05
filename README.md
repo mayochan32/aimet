@@ -570,7 +570,7 @@ aimet <command> [options]
 
 ```console
 $ aimet --version
-2.3.1
+2.4.0
 ```
 
 実行中のaimetと同じ配布パッケージの`package.json`からバージョンを表示します。複数PCや複数ユーザーで調査する場合は、不具合報告にこの出力を含めてください。
@@ -980,17 +980,19 @@ cost = ( input × 入力単価
 }
 ```
 
-利用者ファイルのキーは意図的にプレフィックスとして扱うため、対象を広げたくない場合は完全なモデルIDを書いてください。配列は`[input, output, cacheRead, cacheWrite]`の順、1MトークンあたりUSDです。条件付き倍率はaimet本体の処理であり、この4値だけでは追加できません。
+利用者ファイルのキーは意図的にプレフィックスとして扱うため、対象を広げたくない場合は完全なモデルIDを書いてください。配列は`[input, output, cacheRead, cacheWrite]`の順、1MトークンあたりUSDです。条件付き倍率はaimet本体の処理であり、この4値だけでは追加できません。 上書きする4値は通常モード・通常コンテキストの基準単価です。日付付きsnapshotの単価を上書きしても、既知モデルの長文割増・キャッシュ書き込み・Claude高速モードの課金条件はモデルIDから独立して判定します。未知モデルへ利用者設定のプレフィックスが一致しても、課金条件までは推測しません。
 
 ### 内蔵単価で対応しているモデル
 
-以下は**2026-09-20に公式情報を照合した**`src/pricing.ts`の主な内蔵単価です。金額はすべて1MトークンあたりUSDで、cacheWはClaudeでは5分TTLの書き込み単価です。Claudeの1時間TTLはログの内訳を使って表のcacheWの1.6倍で計算します。同じ行に複数のIDがある場合は同一単価です。
+以下は**2026-10-06に公式情報を照合した**`src/pricing.ts`の主な内蔵単価です。金額はすべて1MトークンあたりUSDで、cacheWはClaudeでは5分TTLの書き込み単価です。Claudeの1時間TTLはログの内訳を使って表のcacheWの1.6倍で計算します。同じ行に複数のIDがある場合は同一単価です。
 
 | 提供元 | モデル | 対応するモデルID | input | output | cacheR | cacheW | 条件・備考 |
 |---|---|---|---:|---:|---:|---:|---|
 | Anthropic | Claude Fable 5 | `claude-fable-5` | 10 | 50 | 1 | 12.5 | 5分cacheW。1時間は20 |
 | Anthropic | Claude Fable / Mythos 5.1 | `claude-fable-5-1` / `claude-mythos-5-1`（ドット表記も対応） | 10 | 50 | 0.25 | 12.5 | 5分cacheW。1時間は20 |
 | Anthropic | Claude Mythos 5 | `claude-mythos-5` | 10 | 50 | 1 | 12.5 | 5分cacheW。1時間は20 |
+| Anthropic | Claude Opus 5.5 | `claude-opus-5-5` / `claude-opus-5.5` | 4 | 20 | 0.2 | 5 | 5分cacheW。1時間は8 |
+| Anthropic | Claude Sonnet 5.5 | `claude-sonnet-5-5` / `claude-sonnet-5.5` | 2 | 10 | 0.2 | 2.5 | 5分cacheW。1時間は4 |
 | Anthropic | Claude Opus 5 | `claude-opus-5` | 5 | 25 | 0.5 | 6.25 | 5分cacheW。1時間は10 |
 | Anthropic | Claude Sonnet 5 | `claude-sonnet-5` | 2 | 10 | 0.2 | 2.5 | 5分cacheW。1時間は4 |
 | Anthropic | Claude Opus 4.5～4.8 | `claude-opus-4-5` / `4-6` / `4-7` / `4-8` | 5 | 25 | 0.5 | 6.25 | Copilotの`4.5`～`4.8`表記にも対応。1時間cacheWは10 |
@@ -999,6 +1001,9 @@ cost = ( input × 入力単価
 | Anthropic | Claude Sonnet 4 | `claude-sonnet-4` | 3 | 15 | 0.3 | 3.75 | 5分cacheW。1時間は6 |
 | Anthropic | Claude Haiku 4 / 4.5 | `claude-haiku-4` / `claude-haiku-4-5` | 1 | 5 | 0.1 | 1.25 | Copilotの`claude-haiku-4.5`にも対応。1時間cacheWは2 |
 | Anthropic | Claude 3.5 Haiku | `claude-3-5-haiku` | 0.8 | 4 | 0.08 | 1 | 5分cacheW。1時間は1.6 |
+| OpenAI | GPT-6.1 Sol | `gpt-6.1-sol` | 2 | 10 | 0.1 | 2.5 | 272K超の入力で入力2倍・出力1.5倍 |
+| OpenAI | GPT-6 Sol | `gpt-6-sol` | 2 | 10 | 0.2 | 2.5 | 272K超の入力で入力2倍・出力1.5倍 |
+| OpenAI | GPT-6 Luna | `gpt-6-luna` | 0.1 | 0.5 | 0.01 | 0.125 | 272K超の入力で入力2倍・出力1.5倍 |
 | OpenAI | GPT-6 Astra | `gpt-6-astra` | 10 | 50 | 1 | 12.5 | 272K超の入力で入力2倍・出力1.5倍 |
 | OpenAI | GPT-5.6 Cyber | `gpt-5.6-cyber` | 12.5 | 75 | 1.25 | 15.625 | 272K超の入力で入力2倍・出力1.5倍 |
 | OpenAI | GPT-5.6 Sol | `gpt-5.6-sol` / `gpt-5.6` | 4 | 20 | 0.4 | 5 | `gpt-5.6`はSolの別名。272K超料金あり |
@@ -1020,13 +1025,15 @@ cost = ( input × 入力単価
 | OpenAI | GPT-5 nano | `gpt-5-nano` / 日付付きsnapshot | 0.05 | 0.4 | 0.005 | 0 | 例: `gpt-5-nano-2025-08-07` |
 | OpenAI | o4-mini | `o4-mini` | 1.1 | 4.4 | 0.275 | 0 | — |
 
-内蔵IDは完全一致または`-YYYYMMDD`形式の日付付きsnapshotに対応します。表にない新しいモデルは、名前が似ていても旧モデルの単価を流用せずコストを`-`にします。Copilot提供モデルのAI Credits欠損時は、GitHubの[モデル別トークン料金](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing)に基づく別の単価表を利用します（OpenAI/AnthropicのBYOK単価表とは分離）。対象にはGPT-6 Astra、GPT-5.6系、Claude 5系（Opus 4.8 fast modeを含む）、Gemini 3.5～3.8 Flash、Grok 4.5/4.6、MAI Code 1.1 Flash、Kimi K2.7/K3および過去ログ用の一部旧モデルを含みます。GitHubのGemini 3.6～3.8 Flash単価は2026年末までのプロモーション価格です。AI Creditsが記録されている場合は単価にかかわらず実測クレジットを優先します。料金は変更され得るため、自動更新の保証ではありません。参照: [OpenAIのモデル料金](https://developers.openai.com/api/docs/models)、[Anthropic料金](https://platform.claude.com/docs/en/about-claude/pricing)。
+内蔵IDは完全一致または`-YYYYMMDD`形式の日付付きsnapshotに対応します。表にない新しいモデルは、名前が似ていても旧モデルの単価を流用せずコストを`-`にします。Copilot提供モデルのAI Credits欠損時は、GitHubの[モデル別トークン料金](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing)に基づく別の単価表を利用します（OpenAI/AnthropicのBYOK単価表とは分離）。対象にはGPT-6 Astra / Sol / Luna、GPT-6.1 Sol、GPT-5.6系、Claude 5 / 5.5系（Opus 4.8 fast modeを含む）、Gemini 3.5～3.8 Flash、Grok 4.5/4.6/4.7、MAI Code 1.1 Flash、Kimi K2.7/K3および過去ログ用の一部旧モデルを含みます。GitHubのGemini 3.6～3.8 Flash単価は2026年末までのプロモーション価格です。AI Creditsが記録されている場合は単価にかかわらず実測クレジットを優先します。料金は変更され得るため、自動更新の保証ではありません。参照: [OpenAIのモデル料金](https://developers.openai.com/api/docs/models)、[Anthropic料金](https://platform.claude.com/docs/en/about-claude/pricing)。
 
 ### ツールごとのコスト計算方法
 
-**Claude Code — 完全内訳による正確なAPI換算**。APIリクエストごとの実測usageをmessageIdで重複排除して合算します。`input_tokens`はキャッシュ分を含まない生の値なのでそのまま使用でき、cacheR（0.1倍）・cacheW（割増）を含む**4項目すべてを常に実測**できます。キャッシュ書き込みはTTLで単価が違うため（5分=1.25倍、1時間=2.0倍）、ログの`cache_creation`内訳から**TTL別に正しく計算**します（単価表のcacheW列は5分TTLの単価。1時間TTL分は内部で1.6倍換算）。親とサブエージェントは公式の`sessionId + agentId`で別セッションとして識別し、それぞれの独立したusageを1回だけ合算します。Anthropicの課金体系をログから完全に再現できるため、API換算値としての精度は最も高くなります。
+**Claude Code — リクエスト単位のAPI換算**。APIメッセージIDで重複排除し、各リクエストのモデルと応答ログの`message.usage.speed`から単価を選びます。`standard`は通常料金、`fast`はClaude Opus 5.5・5・4.8の通常料金の2倍（入力・出力・キャッシュ読み込み・書き込みすべて）です。要求時の高速設定や処理時間からは推測しません。高速対応モデルで`speed`が欠損・不明な場合は通常単価による推定として`*`を付けます。未対応モデルに`fast`が記録されていた場合は料金を推測せず`-`にします。advisorも自身の`speed`を使い、親の速度を引き継ぎません。
 
-**Codex — 累積台帳とリクエスト単位の課金を分けて計算**。`token_count`イベントの`total_token_usage`は累積値なので最大値をセッショントークンとして使用し、コストは累積が増えた時の`last_token_usage`をリクエスト単位で検算して、その時点のモデル単価で合計します。(1) `input_tokens`は`cached_input_tokens`と`cache_write_input_tokens`を含むため、両方を差し引いて非キャッシュ入力、cacheR、cacheWの相互排他的な3区分へ分けます。(2) `reasoning_output_tokens`は`output_tokens`の内数なのでコストへ再加算しません。(3) GPT-5.6系とGPT-6 Astraは明示的なcacheWを非キャッシュ入力単価の1.25倍で計算します。(4) 長文料金のあるモデルは、1リクエストの入力が閾値を超える場合、そのリクエスト全体に入力・出力倍率を適用します。古いrolloutにリクエスト内訳または課金対象のcacheWがなければ、単一モデルの場合は基準単価の推定とし、複数モデルなら誤配分を避けるため`-`にします。モデル名自体がない形式は従来どおり`gpt-5-codex`へフォールバックします。サブエージェントは別rolloutの独立台帳なので、親子を各1回だけ合算します。
+`input_tokens`はキャッシュを含まない入力です。キャッシュ書き込みは`cache_creation`の5分／1時間内訳で計算します（1時間分は5分単価の1.6倍。換算途中でトークン数を丸めません）。保存・表示するトークン数は元の実測値のままです。親とサブエージェントの独立したusageは各1回だけ合算します。高速モードの実ログによるE2Eは未実施で、公式仕様と通常モードの実ログにあるフィールドを基に、再現用ログで検証しています。地域・batch・サーバーツール等の追加料金はこの換算に含みません。参照: [Claude高速モードの応答speedと料金](https://platform.claude.com/docs/en/build-with-claude/fast-mode)。
+
+**Codex — 累積台帳とリクエスト単位の課金を分けて計算**。`token_count`イベントの`total_token_usage`は累積値なので最大値をセッショントークンとして使用し、コストは累積が増えた時の`last_token_usage`をリクエスト単位で検算して、その時点のモデル単価で合計します。(1) `input_tokens`は`cached_input_tokens`と`cache_write_input_tokens`を含むため、両方を差し引いて非キャッシュ入力、cacheR、cacheWの相互排他的な3区分へ分けます。(2) `reasoning_output_tokens`は`output_tokens`の内数なのでコストへ再加算しません。(3) GPT-5.6系、GPT-6 Astra / Sol / Luna、GPT-6.1 Solは明示的なcacheWを非キャッシュ入力単価の1.25倍で計算します。(4) 長文料金のあるモデルは、1リクエストの入力が閾値を超える場合、そのリクエスト全体に入力・出力倍率を適用します。 今回追加したGPT-6 Sol / LunaとGPT-6.1 Solでは、キャッシュ読み込み・書き込みを含む総入力が272,000を超えたリクエストに入力・キャッシュ2倍、出力1.5倍を適用します。272,000ちょうどは通常料金で、セッション累積の大きさでは判定しません。古いrolloutにリクエスト内訳または課金対象のcacheWがなければ、単一モデルの場合は基準単価の推定とし、複数モデルなら誤配分を避けるため`-`にします。モデル名自体がない形式は従来どおり`gpt-5-codex`へフォールバックします。サブエージェントは別rolloutの独立台帳なので、親子を各1回だけ合算します。
 
 **Copilotクレジット（AI Credits）とは**。GitHub Copilotの課金単位で、**1クレジット = $0.01の固定レート**です。2026年6月に従来のプレミアムリクエスト（PRU）制から移行した従量課金モデルで、プランに含まれる月間クレジット枠を消費し、超過分は追加課金されます。重要なのは、**消費クレジット数はモデルや処理量によって変動する**（高価なモデルほど1リクエストあたりの消費が大きい）ため、トークン数から外部で正確に再計算することはできない、という点です。幸いVS CodeのCopilot Chatはリクエストごとの実消費（`copilotCredits`）をログに記録するので、aimetはこれをそのまま採用します — つまりCopilot Chatのcostは推定ではなく**GitHubが実際に差し引いた金額**です。キャッシュの効きやモデルの内部事情もすべて織り込み済みの値なので、キャッシュ内訳（cacheR/cacheW）がログに無くてもコストの正確性には影響しません。GitHub側の単位・開始時期・従量課金の説明は[組織・Enterprise向けAI Creditsの公式説明](https://docs.github.com/en/copilot/concepts/billing/usage-based-billing-for-organizations-and-enterprises)と[Copilotのモデル別課金リファレンス](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing)を参照してください。
 

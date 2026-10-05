@@ -17,7 +17,11 @@ const DEFAULT_PRICING: Record<string, [number, number, number, number]> = {
   'claude-mythos-5.1': [10, 50, 0.25, 12.5],
   'claude-fable-5': [10, 50, 1, 12.5],
   'claude-mythos-5': [10, 50, 1, 12.5],
+  'claude-opus-5-5': [4, 20, 0.2, 5],
+  'claude-opus-5.5': [4, 20, 0.2, 5],
   'claude-opus-5': [5, 25, 0.5, 6.25],
+  'claude-sonnet-5-5': [2, 10, 0.2, 2.5],
+  'claude-sonnet-5.5': [2, 10, 0.2, 2.5],
   'claude-sonnet-5': [2, 10, 0.2, 2.5],
   'claude-opus-4-8': [5, 25, 0.5, 6.25],
   'claude-opus-4.8': [5, 25, 0.5, 6.25], // Copilot resolvedModel spelling
@@ -39,8 +43,11 @@ const DEFAULT_PRICING: Record<string, [number, number, number, number]> = {
   'claude-haiku-4.5': [1, 5, 0.1, 1.25], // Copilot resolvedModel spelling
   'claude-haiku-4': [1, 5, 0.1, 1.25],
   'claude-3-5-haiku': [0.8, 4, 0.08, 1],
-  // OpenAI. GPT-5.6 explicit cache writes are billed at 1.25x input.
+  // OpenAI. GPT-5.6 and GPT-6 explicit cache writes are billed at 1.25x input.
   'gpt-6-astra': [10, 50, 1, 12.5],
+  'gpt-6-sol': [2, 10, 0.2, 2.5],
+  'gpt-6-luna': [0.1, 0.5, 0.01, 0.125],
+  'gpt-6.1-sol': [2, 10, 0.1, 2.5],
   'gpt-5.6-cyber': [12.5, 75, 1.25, 15.625],
   'gpt-5.6-terra': [2, 12, 0.2, 2.5],
   'gpt-5.6-luna': [0.2, 1.2, 0.02, 0.25],
@@ -89,6 +96,9 @@ const COPILOT_PRICING: Record<string, [number, number, number, number]> = {
   'gpt-5.6-terra': [2, 12, 0.2, 2.5],
   'gpt-5.6-luna': [0.2, 1.2, 0.02, 0.25],
   'gpt-6-astra': [10, 50, 1, 12.5],
+  'gpt-6-sol': [2, 10, 0.2, 2.5],
+  'gpt-6-luna': [0.1, 0.5, 0.01, 0.125],
+  'gpt-6.1-sol': [2, 10, 0.1, 2.5],
   'claude-haiku-4-5': [1, 5, 0.1, 1.25],
   'claude-sonnet-4': [3, 15, 0.3, 3.75],
   'claude-sonnet-4-6': [3, 15, 0.3, 3.75],
@@ -96,7 +106,9 @@ const COPILOT_PRICING: Record<string, [number, number, number, number]> = {
   'claude-opus-4-8': [5, 25, 0.5, 6.25],
   'claude-opus-4-8-fast': [10, 50, 1, 12.5],
   'claude-opus-4-8-fast-mode': [10, 50, 1, 12.5],
+  'claude-opus-5-5': [4, 20, 0.2, 5],
   'claude-opus-5': [5, 25, 0.5, 6.25],
+  'claude-sonnet-5-5': [2, 10, 0.2, 2.5],
   'claude-sonnet-5': [2, 10, 0.2, 2.5],
   'claude-fable-5': [10, 50, 1, 12.5],
   'claude-fable-5-1': [10, 50, 0.25, 12.5],
@@ -107,6 +119,7 @@ const COPILOT_PRICING: Record<string, [number, number, number, number]> = {
   'mai-code-1.1-flash': [0.2, 1.2, 0.02, 0],
   'grok-4.5': [2, 6, 0.5, 0],
   'grok-4.6': [2, 6, 0.5, 0],
+  'grok-4.7': [2, 6, 0.5, 0],
   'kimi-k2.7-code': [0.95, 4, 0.19, 0],
   'kimi-k3': [3, 15, 0.3, 0],
 };
@@ -170,8 +183,36 @@ function pricingKey(model: string): string | null {
   return key ?? null;
 }
 
+/** Billing conditions belong to the built-in model, independently of price overrides. */
+function builtinModelKey(model: string): string | null {
+  return Object.keys(DEFAULT_PRICING)
+    .filter((key) => model === key || model.startsWith(`${key}-20`))
+    .sort((a, b) => b.length - a.length)[0] ?? null;
+}
+
+const CLAUDE_FAST_MODELS = new Set([
+  'claude-opus-5-5', 'claude-opus-5.5', 'claude-opus-5',
+  'claude-opus-4-8', 'claude-opus-4.8',
+]);
+
+/** Response usage.speed is authoritative; requested speed is not evidence of billing. */
+export function claudeCostUsd(
+  model: string, tokens: TokenUsage, speed: unknown
+): { cost: number | null; estimated: boolean } {
+  const supportsFast = CLAUDE_FAST_MODELS.has(builtinModelKey(model) ?? '');
+  const base = costUsd(model, tokens);
+  if (speed === 'standard') return { cost: base, estimated: false };
+  if (speed === 'fast') {
+    // Never invent a premium for an unsupported or unknown model.
+    return { cost: supportsFast && base !== null ? base * 2 : null, estimated: !supportsFast };
+  }
+  // Older logs may lack speed; keep standard-equivalent cost visibly estimated
+  // for models that can use fast mode, or whenever an unknown speed was recorded.
+  return { cost: base, estimated: supportsFast || (speed !== undefined && speed !== null) };
+}
+
 const LONG_CONTEXT_MODELS = new Set([
-  'gpt-6-astra',
+  'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol',
   'gpt-5.4', 'gpt-5.4-pro',
   'gpt-5.5', 'gpt-5.5-pro',
   'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-cyber',
@@ -179,14 +220,15 @@ const LONG_CONTEXT_MODELS = new Set([
 
 /** Models whose requests above 272K input tokens use 2x input / 1.5x output. */
 export function hasLongContextSurcharge(model: string): boolean {
-  const key = pricingKey(model);
+  const key = builtinModelKey(model);
   return key !== null && LONG_CONTEXT_MODELS.has(key);
 }
 
-/** GPT-5.6 exposes and bills explicit cache-write input tokens. */
+/** Supported GPT-5.6 and GPT-6 models bill explicit cache-write input tokens. */
 export function billsCacheWrites(model: string): boolean {
-  const key = pricingKey(model);
-  return key !== null && (key.startsWith('gpt-5.6') || key === 'gpt-6-astra');
+  const key = builtinModelKey(model);
+  return key !== null && (key.startsWith('gpt-5.6') ||
+    ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol'].includes(key));
 }
 
 /** API-equivalent cost in USD, or null when a non-zero usage model is unknown. */
@@ -233,9 +275,10 @@ export function copilotCostUsd(model: string, t: TokenUsage): number | null {
   const [inputRate, outputRate, cacheReadRate, cacheWriteRate] = COPILOT_PRICING[key];
   // Legacy debug/chat logs omit cache writes. Their API-equivalent fallback is
   // explicitly estimated; an OTel row with measured writes uses that count.
-  const threshold = key === 'gpt-5.6-luna' || key === 'grok-4.5' || key === 'grok-4.6'
+  const threshold = key === 'gpt-5.6-luna' || key === 'grok-4.5' || key === 'grok-4.6' || key === 'grok-4.7'
     ? 200_000
-    : ['gpt-5.4', 'gpt-5.5', 'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-astra']
+    : ['gpt-5.4', 'gpt-5.5', 'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra',
+      'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol']
       .includes(key) ? 272_000 : Infinity;
   const longContext = t.input + t.cacheRead + (t.cacheWrite ?? 0) > threshold;
   const inputMultiplier = longContext ? 2 : 1;
