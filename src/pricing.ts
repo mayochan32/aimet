@@ -183,6 +183,34 @@ function pricingKey(model: string): string | null {
   return key ?? null;
 }
 
+/** Billing conditions belong to the built-in model, independently of price overrides. */
+function builtinModelKey(model: string): string | null {
+  return Object.keys(DEFAULT_PRICING)
+    .filter((key) => model === key || model.startsWith(`${key}-20`))
+    .sort((a, b) => b.length - a.length)[0] ?? null;
+}
+
+const CLAUDE_FAST_MODELS = new Set([
+  'claude-opus-5-5', 'claude-opus-5.5', 'claude-opus-5',
+  'claude-opus-4-8', 'claude-opus-4.8',
+]);
+
+/** Response usage.speed is authoritative; requested speed is not evidence of billing. */
+export function claudeCostUsd(
+  model: string, tokens: TokenUsage, speed: unknown
+): { cost: number | null; estimated: boolean } {
+  const supportsFast = CLAUDE_FAST_MODELS.has(builtinModelKey(model) ?? '');
+  const base = costUsd(model, tokens);
+  if (speed === 'standard') return { cost: base, estimated: false };
+  if (speed === 'fast') {
+    // Never invent a premium for an unsupported or unknown model.
+    return { cost: supportsFast && base !== null ? base * 2 : null, estimated: !supportsFast };
+  }
+  // Older logs may lack speed; keep standard-equivalent cost visibly estimated
+  // for models that can use fast mode, or whenever an unknown speed was recorded.
+  return { cost: base, estimated: supportsFast || (speed !== undefined && speed !== null) };
+}
+
 const LONG_CONTEXT_MODELS = new Set([
   'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol',
   'gpt-5.4', 'gpt-5.4-pro',
@@ -192,13 +220,13 @@ const LONG_CONTEXT_MODELS = new Set([
 
 /** Models whose requests above 272K input tokens use 2x input / 1.5x output. */
 export function hasLongContextSurcharge(model: string): boolean {
-  const key = pricingKey(model);
+  const key = builtinModelKey(model);
   return key !== null && LONG_CONTEXT_MODELS.has(key);
 }
 
 /** Supported GPT-5.6 and GPT-6 models bill explicit cache-write input tokens. */
 export function billsCacheWrites(model: string): boolean {
-  const key = pricingKey(model);
+  const key = builtinModelKey(model);
   return key !== null && (key.startsWith('gpt-5.6') ||
     ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol'].includes(key));
 }

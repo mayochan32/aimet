@@ -843,3 +843,39 @@ test('copilot-cli: sums output tokens, counts turns, leaves input/cost unknown',
   // Input unknown -> no meaningful API-equivalent cost.
   assert.equal(m.costUsd, null, 'cost must be null, not a misleading output-only figure');
 });
+
+test('claude: response speed prices each request and advisor independently, including cache TTL', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-claude-speed-'));
+  const file = join(root, 'speed.jsonl');
+  const usage = { input_tokens: 100_000, output_tokens: 10_000,
+    cache_read_input_tokens: 50_000, cache_creation_input_tokens: 3,
+    cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 3 } };
+  const record = (id, u, model = 'claude-opus-5-5') => ({
+    type: 'assistant', timestamp: '2026-10-06T00:00:00Z', sessionId: 'speed',
+    speed: 'fast', // Requested speed must not override the actual response speed.
+    message: { id, model, usage: u },
+  });
+  writeFileSync(file, [
+    record('a', { ...usage, speed: 'fast' }),
+    record('a', { ...usage, speed: 'fast' }), // duplicate must be counted once
+    record('b', { ...usage, speed: 'standard', iterations: [
+      { type: 'advisor_message', model: 'claude-opus-5', ...usage, speed: 'fast' },
+    ] }),
+  ].map(JSON.stringify).join('\n'));
+  const row = await claudeParser.parseFile(file);
+  // Opus 5.5: .610024 standard, 1.220048 fast; advisor Opus 5: 1.55006 fast.
+  assert.ok(Math.abs(row.costUsd - 3.380132) < 1e-12);
+  assert.equal(row.estimated, false);
+  assert.equal(row.tokens.cacheWrite, 9, 'stored counts remain actual, not TTL-equivalent tokens');
+
+  for (const speed of [undefined, null, 'future-speed']) {
+    writeFileSync(file, JSON.stringify(record('c', { ...usage, speed })));
+    const estimated = await claudeParser.parseFile(file);
+    assert.ok(Math.abs(estimated.costUsd - 0.610024) < 1e-12);
+    assert.equal(estimated.estimated, true);
+  }
+  writeFileSync(file, JSON.stringify(record('d', { ...usage, speed: 'fast' }, 'claude-sonnet-5')));
+  assert.equal((await claudeParser.parseFile(file)).costUsd, null, 'unsupported fast pricing is not guessed');
+  writeFileSync(file, JSON.stringify(record('e', { ...usage, speed: 'standard' }, 'claude-opus-4-6')));
+  assert.equal((await claudeParser.parseFile(file)).estimated, false, 'reported standard fallback is authoritative');
+});

@@ -1,6 +1,6 @@
 import { basename, dirname, join } from 'node:path';
 import type { Parser, SessionMetrics, TokenUsage } from '../types.js';
-import { costUsd } from '../pricing.js';
+import { claudeCostUsd } from '../pricing.js';
 import { claudeConfigDir } from '../paths.js';
 import { jsonlRecords, activeSeconds, durationSeconds } from './util.js';
 
@@ -50,6 +50,7 @@ export const claudeParser: Parser = {
     let cwd = '';
     let turns = 0;
     let unknownCost = false;
+    let estimated = false;
     let totalCost = 0;
     let anonymous = 0;
 
@@ -102,11 +103,11 @@ export const claudeParser: Parser = {
       tokens.cacheWrite = (tokens.cacheWrite ?? 0) + (usageTokens.cacheWrite ?? 0);
       if (entry.model) models.add(entry.model);
       const writeForCost = oneHour + fiveMinute > 0
-        ? Math.round(fiveMinute + 1.6 * oneHour) : usageTokens.cacheWrite;
-      const cost = entry.model
-        ? costUsd(entry.model, { ...usageTokens, cacheWrite: writeForCost }) : null;
-      if (cost === null) unknownCost = true;
-      else totalCost += cost;
+        ? (fiveMinute + 1.6 * oneHour) : usageTokens.cacheWrite;
+      const priced = claudeCostUsd(entry.model, { ...usageTokens, cacheWrite: writeForCost }, u.speed);
+      estimated ||= priced.estimated;
+      if (priced.cost === null) unknownCost = true;
+      else totalCost += priced.cost;
       // Advisor usage is NOT included in the top-level executor totals.
       const iterations = Array.isArray(u.iterations) ? u.iterations : [];
       for (const iteration of iterations) {
@@ -130,13 +131,14 @@ export const claudeParser: Parser = {
         tokens.cacheRead = (tokens.cacheRead ?? 0) + (advisorTokens.cacheRead ?? 0);
         tokens.cacheWrite = (tokens.cacheWrite ?? 0) + (advisorTokens.cacheWrite ?? 0);
         if (advisorModel) models.add(advisorModel);
-        const advisorCost = advisorModel ? costUsd(advisorModel, {
+        const advisorPrice = claudeCostUsd(advisorModel, {
           ...advisorTokens,
           cacheWrite: advisor1h + advisor5m > 0
-            ? Math.round(advisor5m + 1.6 * advisor1h) : advisorTokens.cacheWrite,
-        }) : null;
-        if (advisorCost === null) unknownCost = true;
-        else totalCost += advisorCost;
+            ? advisor5m + 1.6 * advisor1h : advisorTokens.cacheWrite,
+        }, advisor.speed);
+        estimated ||= advisorPrice.estimated;
+        if (advisorPrice.cost === null) unknownCost = true;
+        else totalCost += advisorPrice.cost;
       }
     }
 
@@ -172,7 +174,7 @@ export const claudeParser: Parser = {
       // 1h-TTL writes are billed 2.0x input = 1.6x the 5m rate, so convert
       // them to "5m-equivalent" tokens for cost purposes when the split is known.
       costUsd: unknownCost ? null : totalCost,
-      estimated: false,
+      estimated,
       metricScope: 'own',
       turns,
       lastEventAt: last,
