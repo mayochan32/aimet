@@ -92,7 +92,7 @@ test('codex: uses max cumulative usage and splits cached input', async () => {
   const m = await codexParser.parseFile(fx('codex-basic.jsonl'));
   assert.ok(m);
   assert.equal(m.model, 'gpt-5.2');
-  assert.equal(m.estimated, false);
+  assert.equal(m.estimated, true, 'billed service tier is unavailable');
   assert.equal(m.turns, 1, 'one task_started');
   // largest total (20500) wins; input = 20000 - 5000 cached
   assert.equal(m.tokens.input, 15000);
@@ -160,7 +160,7 @@ test(`codex: ${model} splits cache writes and prices each long-context request`,
   assert.equal(m.tokens.output, 1_500);
   assert.equal(m.tokens.reasoning, 150);
   assert.ok(Math.abs(m.costUsd - expected) < 1e-12);
-  assert.equal(m.estimated, false);
+  assert.equal(m.estimated, true, 'complete tokens do not establish billed service tier');
 });
 
 test(`codex: ${model} old rollout without cache-write detail is explicitly estimated`, async () => {
@@ -878,4 +878,26 @@ test('claude: response speed prices each request and advisor independently, incl
   assert.equal((await claudeParser.parseFile(file)).costUsd, null, 'unsupported fast pricing is not guessed');
   writeFileSync(file, JSON.stringify(record('e', { ...usage, speed: 'standard' }, 'claude-opus-4-6')));
   assert.equal((await claudeParser.parseFile(file)).estimated, false, 'reported standard fallback is authoritative');
+});
+
+
+test('claude: Haiku length uses actual 1h writes, each request and advisor independently', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'aimet-haiku-')), 'haiku.jsonl');
+  const usage = { input_tokens: 60_000, output_tokens: 1_000,
+    cache_read_input_tokens: 0, cache_creation_input_tokens: 40_000,
+    cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 40_000 }, speed: 'standard' };
+  const record = (id, u) => ({ type: 'assistant', timestamp: '2026-10-20T00:00:00Z',
+    sessionId: 'haiku', message: { id, model: 'claude-haiku-5-5', usage: u } });
+  const shortCost = (60_000 * .1 + 40_000 * .2 + 1_000 * .5) / 1e6;
+  const longCost = (60_001 * .1 + 40_000 * .2 + 1_000 * .5) * 5 / 1e6;
+  writeFileSync(file, [record('one', usage), record('two', { ...usage, iterations: [
+    { ...usage, input_tokens: 60_001, type: 'advisor_message', model: 'claude-haiku-5-5' },
+  ] })].map(JSON.stringify).join('\n'));
+  const result = await claudeParser.parseFile(file);
+  assert.ok(Math.abs(result.costUsd - (shortCost * 2 + longCost)) < 1e-12);
+  assert.equal(result.tokens.cacheWrite, 120_000, 'stored tokens are never TTL weighted');
+  writeFileSync(file, JSON.stringify(record('missing', { ...usage, cache_creation_input_tokens: undefined })));
+  assert.equal((await claudeParser.parseFile(file)).costUsd, null);
+  writeFileSync(file, JSON.stringify(record('missing', undefined)));
+  assert.equal((await claudeParser.parseFile(file)).costUsd, null);
 });

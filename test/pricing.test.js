@@ -83,8 +83,8 @@ test('pricing: September models price every token class and dated snapshots', ()
     ['gpt-6.1-sol', [2, 10, 0.1, 2.5]],
     ['claude-opus-5-5', [4, 20, 0.2, 5]],
     ['claude-opus-5.5', [4, 20, 0.2, 5]],
-    ['claude-sonnet-5-5', [2, 10, 0.2, 2.5]],
-    ['claude-sonnet-5.5', [2, 10, 0.2, 2.5]],
+    ['claude-sonnet-5-5', [2, 10, 0.1, 2.5]],
+    ['claude-sonnet-5.5', [2, 10, 0.1, 2.5]],
   ];
   for (const [model, rates] of models) {
     for (const id of [model, `${model}-20261001`]) {
@@ -123,4 +123,27 @@ test('pricing: Copilot Grok 4.7 doubles input and output only above 200K', () =>
   assert.equal(copilotCostUsd('grok-4.7-20261001', usage({ input: 100_001, cacheRead: 100_000,
     output: 1_000 })), 0.512004);
   assert.equal(costUsd('grok-4.7', usage({ input: 1_000 })), null, 'GitHub rates are not BYOK rates');
+});
+
+
+test('pricing: Haiku 5.5 uses raw prompt length and fivefold rates above 100K', () => {
+  for (const model of ['claude-haiku-5-5', 'claude-haiku-5.5', 'claude-haiku-5-5-20261008']) {
+    for (const calculate of [costUsd, copilotCostUsd]) {
+      const atBoundary = usage({ input: 40_000, cacheRead: 30_000, cacheWrite: 30_000, output: 1_000 });
+      const expected = (40_000 * .1 + 30_000 * .01 + 30_000 * .125 + 1_000 * .5) / 1e6;
+      assert.equal(calculate(model, atBoundary), expected);
+      assert.equal(calculate(model, { ...atBoundary, input: 40_001 }), (expected + .1 / 1e6) * 5);
+      assert.equal(calculate(model, { ...atBoundary, cacheWrite: null }), null);
+    }
+  }
+  assert.equal(costUsd('claude-haiku-5-5-future', usage({ input: 1 })), null);
+  assert.equal(costUsd('claude-haiku-5-5', usage(), { promptTokens: null }), null);
+});
+
+test('pricing: Sonnet 5.5 cache reads and Copilot Gemini 4 Argon promotion', () => {
+  for (const calculate of [costUsd, copilotCostUsd]) {
+    assert.equal(calculate('claude-sonnet-5-5', usage({ cacheRead: 1_000_000 })), .1);
+  }
+  assert.equal(copilotCostUsd('gemini-4-argon', usage({ input: 100_000, cacheRead: 200_000, output: 10_000 })), .32);
+  assert.equal(costUsd('gemini-4-argon', usage({ input: 1 })), null, 'Copilot promotion is not a BYOK rate');
 });

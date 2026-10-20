@@ -42,7 +42,6 @@ export const codexParser: Parser = {
     let previousTotal: Record<string, number> | null = null;
     const requestUsages: Array<{ model: string; tokens: TokenUsage }> = [];
     let requestUsageComplete = true;
-    let requestModelMissing = false;
     const sessionMetas: CodexSessionMeta[] = [];
 
     for await (const rec of jsonlRecords(path)) {
@@ -72,7 +71,6 @@ export const codexParser: Parser = {
           if (total && (total.total_tokens ?? 0) > (previousTotal?.total_tokens ?? 0)) {
             const last = info?.last_token_usage as Record<string, number> | undefined;
             if (last && usageMatchesDelta(previousTotal, total, last)) {
-              if (!model) requestModelMissing = true;
               requestUsages.push({ model: model || 'gpt-5-codex', tokens: codexTokens(last) });
             } else {
               requestUsageComplete = false;
@@ -100,14 +98,10 @@ export const codexParser: Parser = {
 
     // When the log carries no model name we fall back to gpt-5-codex pricing.
     // Tokens are still measured, but the unit price is a guess -> mark estimated.
-    const modelKnown = model !== '';
     const observedModels = new Set([...contextModels, ...requestUsages.map((request) => request.model)]);
     const mixedModels = observedModels.size > 1;
     const resolvedModel = mixedModels ? 'mixed' : ([...observedModels][0] || model || 'gpt-5-codex');
     const needsRequestPricing = hasLongContextSurcharge(resolvedModel) || mixedModels;
-    const missingBilledCacheWrites = requestUsages.some(
-      (request) => billsCacheWrites(request.model) && request.tokens.cacheWrite === null
-    ) || (billsCacheWrites(resolvedModel) && tokens.cacheWrite === null);
     const exactRequestPricing = requestUsageComplete && requestUsages.length > 0 &&
       !requestUsages.some((request) => billsCacheWrites(request.model) && request.tokens.cacheWrite === null);
     const sessionCost = exactRequestPricing
@@ -124,8 +118,10 @@ export const codexParser: Parser = {
       activeSec: activeSeconds(timestamps),
       tokens,
       costUsd: sessionCost,
-      estimated: !modelKnown || requestModelMissing || missingBilledCacheWrites ||
-        (needsRequestPricing && !exactRequestPricing),
+      // Rollout usage does not establish the billed service tier. Even complete
+      // tokens only support a standard-tier API-equivalent estimate.
+      estimated: true,
+      costSource: 'estimated',
       turns,
       lastEventAt: last,
       parentSessionId,

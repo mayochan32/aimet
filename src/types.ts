@@ -61,7 +61,7 @@ export interface SessionMetrics {
   tokens: TokenUsage;
   /** API-equivalent cost in USD; null if model pricing unknown */
   costUsd: number | null;
-  /** true when tokens are estimated rather than read from the log */
+  /** true when token counts or billing conditions require estimation */
   estimated: boolean;
   /** whether this row measures only itself or already includes descendants */
   metricScope?: 'own' | 'tree';
