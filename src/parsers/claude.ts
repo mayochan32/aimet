@@ -1,6 +1,6 @@
 import { basename, dirname, join } from 'node:path';
 import type { Parser, SessionMetrics, TokenUsage } from '../types.js';
-import { claudeCostUsd } from '../pricing.js';
+import { claudeCostUsd, isHaiku55 } from '../pricing.js';
 import { claudeConfigDir } from '../paths.js';
 import { jsonlRecords, activeSeconds, durationSeconds } from './util.js';
 
@@ -85,7 +85,11 @@ export const claudeParser: Parser = {
     const models = new Set<string>();
     for (const entry of messages.values()) {
       const u = entry.usage;
-      if (!u) continue;
+      if (!u) {
+        unknownCost = true;
+        estimated = true;
+        continue;
+      }
       const usageTokens: TokenUsage = {
         input: Number(u.input_tokens ?? 0),
         output: Number(u.output_tokens ?? 0),
@@ -104,7 +108,10 @@ export const claudeParser: Parser = {
       if (entry.model) models.add(entry.model);
       const writeForCost = oneHour + fiveMinute > 0
         ? (fiveMinute + 1.6 * oneHour) : usageTokens.cacheWrite;
-      const priced = claudeCostUsd(entry.model, { ...usageTokens, cacheWrite: writeForCost }, u.speed);
+      if (isHaiku55(entry.model) && typeof u.output_tokens !== 'number') unknownCost = true;
+      const priced = claudeCostUsd(entry.model,
+        { ...usageTokens, cacheWrite: writeForCost }, u.speed,
+        { promptTokens: rawPromptTokens(u) });
       estimated ||= priced.estimated;
       if (priced.cost === null) unknownCost = true;
       else totalCost += priced.cost;
@@ -131,11 +138,12 @@ export const claudeParser: Parser = {
         tokens.cacheRead = (tokens.cacheRead ?? 0) + (advisorTokens.cacheRead ?? 0);
         tokens.cacheWrite = (tokens.cacheWrite ?? 0) + (advisorTokens.cacheWrite ?? 0);
         if (advisorModel) models.add(advisorModel);
+        if (isHaiku55(advisorModel) && typeof advisor.output_tokens !== 'number') unknownCost = true;
         const advisorPrice = claudeCostUsd(advisorModel, {
           ...advisorTokens,
           cacheWrite: advisor1h + advisor5m > 0
             ? advisor5m + 1.6 * advisor1h : advisorTokens.cacheWrite,
-        }, advisor.speed);
+        }, advisor.speed, { promptTokens: rawPromptTokens(advisor) });
         estimated ||= advisorPrice.estimated;
         if (advisorPrice.cost === null) unknownCost = true;
         else totalCost += advisorPrice.cost;
@@ -182,3 +190,11 @@ export const claudeParser: Parser = {
     };
   },
 };
+
+/** Actual prompt tokens, never the TTL-weighted equivalent used for pricing. */
+function rawPromptTokens(usage: Record<string, unknown>): number | null {
+  const counts = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens']
+    .map((key) => usage[key]);
+  return counts.every((n) => typeof n === 'number' && Number.isFinite(n) && n >= 0)
+    ? (counts as number[]).reduce((sum, n) => sum + n, 0) : null;
+}

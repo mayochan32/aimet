@@ -25,3 +25,10 @@ test('parseTimeArg: separators are tolerated, junk is rejected', () => {
   assert.throws(() => parseTimeArg('2026'), /invalid time/);
   assert.throws(() => parseTimeArg('notadate'), /invalid time/);
 });
+
+
+test('Codex cost label states the standard-tier estimation reason', async () => {
+  const { costLabel } = await import('../dist/report.js');
+  assert.match(costLabel({ tool: 'codex', estimated: 1 }), /estimated: standard tier; billed tier not recorded/);
+  assert.doesNotMatch(costLabel({ tool: 'claude', estimated: 0 }), /billed tier not recorded/);
+});

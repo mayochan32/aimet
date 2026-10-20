@@ -10,7 +10,9 @@ import type { TokenUsage } from './types.js';
  * prefix, with the longest matching key taking precedence.
  */
 const DEFAULT_PRICING: Record<string, [number, number, number, number]> = {
-  // Anthropic
+  // Anthropic (official pricing checked 2026-10-20)
+  'claude-haiku-5-5': [0.1, 0.5, 0.01, 0.125],
+  'claude-haiku-5.5': [0.1, 0.5, 0.01, 0.125],
   'claude-fable-5-1': [10, 50, 0.25, 12.5],
   'claude-fable-5.1': [10, 50, 0.25, 12.5],
   'claude-mythos-5-1': [10, 50, 0.25, 12.5],
@@ -20,8 +22,8 @@ const DEFAULT_PRICING: Record<string, [number, number, number, number]> = {
   'claude-opus-5-5': [4, 20, 0.2, 5],
   'claude-opus-5.5': [4, 20, 0.2, 5],
   'claude-opus-5': [5, 25, 0.5, 6.25],
-  'claude-sonnet-5-5': [2, 10, 0.2, 2.5],
-  'claude-sonnet-5.5': [2, 10, 0.2, 2.5],
+  'claude-sonnet-5-5': [2, 10, 0.1, 2.5],
+  'claude-sonnet-5.5': [2, 10, 0.1, 2.5],
   'claude-sonnet-5': [2, 10, 0.2, 2.5],
   'claude-opus-4-8': [5, 25, 0.5, 6.25],
   'claude-opus-4.8': [5, 25, 0.5, 6.25], // Copilot resolvedModel spelling
@@ -99,6 +101,7 @@ const COPILOT_PRICING: Record<string, [number, number, number, number]> = {
   'gpt-6-sol': [2, 10, 0.2, 2.5],
   'gpt-6-luna': [0.1, 0.5, 0.01, 0.125],
   'gpt-6.1-sol': [2, 10, 0.1, 2.5],
+  'claude-haiku-5-5': [0.1, 0.5, 0.01, 0.125],
   'claude-haiku-4-5': [1, 5, 0.1, 1.25],
   'claude-sonnet-4': [3, 15, 0.3, 3.75],
   'claude-sonnet-4-6': [3, 15, 0.3, 3.75],
@@ -108,13 +111,15 @@ const COPILOT_PRICING: Record<string, [number, number, number, number]> = {
   'claude-opus-4-8-fast-mode': [10, 50, 1, 12.5],
   'claude-opus-5-5': [4, 20, 0.2, 5],
   'claude-opus-5': [5, 25, 0.5, 6.25],
-  'claude-sonnet-5-5': [2, 10, 0.2, 2.5],
+  'claude-sonnet-5-5': [2, 10, 0.1, 2.5],
   'claude-sonnet-5': [2, 10, 0.2, 2.5],
   'claude-fable-5': [10, 50, 1, 12.5],
   'claude-fable-5-1': [10, 50, 0.25, 12.5],
   'gemini-3.5-flash': [1.5, 9, 0.15, 0],
   'gemini-3.6-flash': [0.75, 3.75, 0.075, 0],
   'gemini-3.7-flash': [0.75, 3.75, 0.075, 0],
+  // GitHub promotion until 2026-12-01; recheck before extending these rates.
+  'gemini-4-argon': [2, 10, 0.1, 0],
   'gemini-3.8-flash': [0.75, 3.75, 0.075, 0],
   'mai-code-1.1-flash': [0.2, 1.2, 0.02, 0],
   'grok-4.5': [2, 6, 0.5, 0],
@@ -197,10 +202,11 @@ const CLAUDE_FAST_MODELS = new Set([
 
 /** Response usage.speed is authoritative; requested speed is not evidence of billing. */
 export function claudeCostUsd(
-  model: string, tokens: TokenUsage, speed: unknown
+  model: string, tokens: TokenUsage, speed: unknown,
+  options: { promptTokens?: number | null } = {}
 ): { cost: number | null; estimated: boolean } {
   const supportsFast = CLAUDE_FAST_MODELS.has(builtinModelKey(model) ?? '');
-  const base = costUsd(model, tokens);
+  const base = costUsd(model, tokens, options);
   if (speed === 'standard') return { cost: base, estimated: false };
   if (speed === 'fast') {
     // Never invent a premium for an unsupported or unknown model.
@@ -217,6 +223,10 @@ const LONG_CONTEXT_MODELS = new Set([
   'gpt-5.5', 'gpt-5.5-pro',
   'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-cyber',
 ]);
+
+export function isHaiku55(model: string): boolean {
+  return ['claude-haiku-5-5', 'claude-haiku-5.5'].includes(builtinModelKey(model) ?? '');
+}
 
 /** Models whose requests above 272K input tokens use 2x input / 1.5x output. */
 export function hasLongContextSurcharge(model: string): boolean {
@@ -235,8 +245,9 @@ export function billsCacheWrites(model: string): boolean {
 export function costUsd(
   model: string,
   t: TokenUsage,
-  options: { applyLongContextSurcharge?: boolean } = {}
+  options: { applyLongContextSurcharge?: boolean; promptTokens?: number | null } = {}
 ): number | null {
+  if (isHaiku55(model) && options.promptTokens === null) return null;
   // A request that failed before billing can retain a routing id such as
   // "copilot/auto", which intentionally has no price-table entry. When every
   // priced field is explicitly measured as zero, the cost is exactly $0 for
@@ -249,11 +260,17 @@ export function costUsd(
   const key = pricingKey(model);
   if (!key) return null;
   const [inP, outP, crP, cwP] = table[key];
-  const pricedInput = (t.input ?? 0) + (t.cacheRead ?? 0) + (t.cacheWrite ?? 0);
+  // Raw prompt length must precede the Claude one-hour write cost conversion.
+  const haiku = isHaiku55(model);
+  const completePrompt = t.input !== null && t.cacheRead !== null && t.cacheWrite !== null;
+  const pricedInput = options.promptTokens !== undefined ? options.promptTokens
+    : completePrompt || !haiku ? (t.input ?? 0) + (t.cacheRead ?? 0) + (t.cacheWrite ?? 0) : null;
+  if (haiku && (pricedInput === null || t.output === null)) return null;
   const longContext = options.applyLongContextSurcharge !== false &&
-    hasLongContextSurcharge(model) && pricedInput > 272_000;
-  const inputMultiplier = longContext ? 2 : 1;
-  const outputMultiplier = longContext ? 1.5 : 1;
+    hasLongContextSurcharge(model) && pricedInput !== null && pricedInput > 272_000;
+  const haikuLong = haiku && pricedInput !== null && pricedInput > 100_000;
+  const inputMultiplier = haikuLong ? 5 : longContext ? 2 : 1;
+  const outputMultiplier = haikuLong ? 5 : longContext ? 1.5 : 1;
   // null token fields mean "not recorded by the log" -> contribute 0 here.
   return (
     (((t.input ?? 0) * inP +
@@ -275,14 +292,16 @@ export function copilotCostUsd(model: string, t: TokenUsage): number | null {
   const [inputRate, outputRate, cacheReadRate, cacheWriteRate] = COPILOT_PRICING[key];
   // Legacy debug/chat logs omit cache writes. Their API-equivalent fallback is
   // explicitly estimated; an OTel row with measured writes uses that count.
-  const threshold = key === 'gpt-5.6-luna' || key === 'grok-4.5' || key === 'grok-4.6' || key === 'grok-4.7'
+  const haiku = key === 'claude-haiku-5-5';
+  if (haiku && t.cacheWrite === null) return null;
+  const threshold = haiku ? 100_000 : key === 'gpt-5.6-luna' || key === 'grok-4.5' || key === 'grok-4.6' || key === 'grok-4.7'
     ? 200_000
     : ['gpt-5.4', 'gpt-5.5', 'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra',
       'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol']
       .includes(key) ? 272_000 : Infinity;
   const longContext = t.input + t.cacheRead + (t.cacheWrite ?? 0) > threshold;
-  const inputMultiplier = longContext ? 2 : 1;
-  const outputMultiplier = longContext && !key.startsWith('grok-') ? 1.5 : longContext ? 2 : 1;
+  const inputMultiplier = longContext ? (haiku ? 5 : 2) : 1;
+  const outputMultiplier = longContext ? (haiku ? 5 : key.startsWith('grok-') ? 2 : 1.5) : 1;
   return ((t.input * inputRate + t.cacheRead * cacheReadRate +
     (t.cacheWrite ?? 0) * cacheWriteRate) * inputMultiplier +
     t.output * outputRate * outputMultiplier) / 1e6;

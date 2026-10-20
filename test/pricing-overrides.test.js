@@ -15,6 +15,7 @@ test('price overrides preserve built-in billing conditions and Codex estimation'
       'gpt-6.1-sol-20260929': [3, 15, 0.2, 4],
       'claude-opus-5-5-20260922': [5, 25, 0.3, 6.25],
       'gpt-6': [1, 2, 0.1, 0],
+      'claude-haiku-5-5-20261008': [1, 5, .1, 1.25],
     }));
     const { costUsd, claudeCostUsd, hasLongContextSurcharge, billsCacheWrites } = await import('../dist/pricing.js');
     const model = 'gpt-6.1-sol-20260929';
@@ -27,6 +28,8 @@ test('price overrides preserve built-in billing conditions and Codex estimation'
     assert.equal(costUsd('gpt-6-future', tokens), 0.302, 'user prefixes still set prices');
     assert.deepEqual(claudeCostUsd('claude-opus-5-5-20260922', tokens, 'fast'),
       { cost: 3.05, estimated: false });
+
+    assert.equal(costUsd('claude-haiku-5-5-20261008', tokens), 1.525, 'Haiku long context survives snapshot overrides');
 
     const { codexParser } = await import('../dist/parsers/codex.js');
     const file = join(root, 'rollout-test.jsonl');
@@ -42,7 +45,7 @@ test('price overrides preserve built-in billing conditions and Codex estimation'
       ].map(JSON.stringify).join('\n'));
       const row = await codexParser.parseFile(file);
       assert.equal(row.costUsd, hasWrites ? 1.8225 : 0.915);
-      assert.equal(row.estimated, !hasWrites);
+      assert.equal(row.estimated, true, 'billed tier remains unknown with or without cache writes');
     }
   } finally {
     t.mock.restoreAll();
