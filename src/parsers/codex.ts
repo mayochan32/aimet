@@ -119,7 +119,8 @@ export const codexParser: Parser = {
       tokens,
       costUsd: sessionCost,
       // Rollout usage does not establish the billed service tier. Even complete
-      // tokens only support a standard-tier API-equivalent estimate.
+      // tokens only support a standard-tier API-equivalent estimate. Write
+      // totals have no TTL breakdown: billed writes use the 30m baseline.
       estimated: true,
       costSource: 'estimated',
       turns,

@@ -60,6 +60,7 @@ export function reportMd(
     '- active: 実働時間（5分超のアイドルを除外） / wall: 実時間',
     '- start / last: 期間内の最初のセッション開始・最後に観測したイベント（ローカル時刻）。lastは終了確定を意味しない',
     '- cost: Claude/Codex はAPI換算USD。CopilotのactualはAI Credits × $0.01、推定・混在行はAPI換算推定を含む場合がある。Copilot CLIもOTelにトークン数またはCreditsがあれば算出可能',
+    '- Codexは通常モード・課金対象cacheWは30分単価で換算。課金モードとキャッシュ保存期間はログから確定できない',
     '- `*` は推定値を含む。一部でもトークン量またはコストが不明な集計値は `-` とし、既知分だけを完全な合計として表示しない',
     '',
   ].join('\n');

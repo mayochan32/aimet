@@ -296,7 +296,7 @@ export function report(store: Store, opts: ReportOpts = {}): string {
   const widths = header.map((h, i) => Math.max(h.length, ...lines.map((l) => l[i].length)));
   const fmt = (cols: string[]) => cols.map((c, i) => c.padStart(widths[i])).join('  ');
   return [fmt(header), fmt(widths.map((w) => '-'.repeat(w))), ...lines.map(fmt)].join('\n') +
-    '\n\n( * = includes estimated values | Claude/Codex: API-equivalent USD; Codex uses standard tier (billed tier unavailable) | ' +
+    '\n\n( * = includes estimated values | Claude/Codex: API-equivalent USD; Codex uses standard tier / 30m cache-write baseline (billed tier / cache TTL unavailable) | ' +
     'Copilot actual: AI Credits x $0.01; estimated/mixed rows may include API-equivalent estimates | ' +
     'Copilot CLI: OTel may provide tokens/credits; other logs may not )' +
     '\nコストは参考値。実際の実行環境に合わせて計算してください。' +
@@ -386,7 +386,7 @@ export function costLabel(r: Record<string, unknown>): string {
       ? ' (mixed actual + API-equivalent estimate)'
       : ' (API-equivalent, estimated)';
   }
-  if (r.tool === 'codex') return ' (API-equivalent, estimated: standard tier; billed tier not recorded)';
+  if (r.tool === 'codex') return ' (API-equivalent, estimated: standard tier; billed tier not recorded; 30m cache-write baseline where applicable; cache TTL not recorded)';
   return ' (API-equivalent)';
 }
 
