@@ -45,11 +45,14 @@ const DEFAULT_PRICING: Record<string, [number, number, number, number]> = {
   'claude-haiku-4.5': [1, 5, 0.1, 1.25], // Copilot resolvedModel spelling
   'claude-haiku-4': [1, 5, 0.1, 1.25],
   'claude-3-5-haiku': [0.8, 4, 0.08, 1],
-  // OpenAI. GPT-5.6 and GPT-6 explicit cache writes are billed at 1.25x input.
+  // OpenAI. GPT-5.6/6 writes use 30-minute baseline rates (1.25x input).
+  // 12-hour writes cost 2.5x input, but supported rollout/OTel logs omit TTL.
+  // Do not treat this baseline estimate as observed cache lifetime.
   'gpt-6-astra': [10, 50, 1, 12.5],
   'gpt-6-sol': [2, 10, 0.2, 2.5],
   'gpt-6-luna': [0.1, 0.5, 0.01, 0.125],
   'gpt-6.1-sol': [2, 10, 0.1, 2.5],
+  'gpt-6.1-terra': [1, 5, 0.05, 1.25],
   'gpt-5.6-cyber': [12.5, 75, 1.25, 15.625],
   'gpt-5.6-terra': [2, 12, 0.2, 2.5],
   'gpt-5.6-luna': [0.2, 1.2, 0.02, 0.25],
@@ -101,6 +104,7 @@ const COPILOT_PRICING: Record<string, [number, number, number, number]> = {
   'gpt-6-sol': [2, 10, 0.2, 2.5],
   'gpt-6-luna': [0.1, 0.5, 0.01, 0.125],
   'gpt-6.1-sol': [2, 10, 0.1, 2.5],
+  'gpt-6.1-terra': [1, 5, 0.05, 1.25],
   'claude-haiku-5-5': [0.1, 0.5, 0.01, 0.125],
   'claude-haiku-4-5': [1, 5, 0.1, 1.25],
   'claude-sonnet-4': [3, 15, 0.3, 3.75],
@@ -218,7 +222,7 @@ export function claudeCostUsd(
 }
 
 const LONG_CONTEXT_MODELS = new Set([
-  'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol',
+  'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol', 'gpt-6.1-terra',
   'gpt-5.4', 'gpt-5.4-pro',
   'gpt-5.5', 'gpt-5.5-pro',
   'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-cyber',
@@ -238,7 +242,7 @@ export function hasLongContextSurcharge(model: string): boolean {
 export function billsCacheWrites(model: string): boolean {
   const key = builtinModelKey(model);
   return key !== null && (key.startsWith('gpt-5.6') ||
-    ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol'].includes(key));
+    ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol', 'gpt-6.1-terra'].includes(key));
 }
 
 /** API-equivalent cost in USD, or null when a non-zero usage model is unknown. */
@@ -297,7 +301,7 @@ export function copilotCostUsd(model: string, t: TokenUsage): number | null {
   const threshold = haiku ? 100_000 : key === 'gpt-5.6-luna' || key === 'grok-4.5' || key === 'grok-4.6' || key === 'grok-4.7'
     ? 200_000
     : ['gpt-5.4', 'gpt-5.5', 'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra',
-      'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol']
+      'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol', 'gpt-6.1-terra']
       .includes(key) ? 272_000 : Infinity;
   const longContext = t.input + t.cacheRead + (t.cacheWrite ?? 0) > threshold;
   const inputMultiplier = longContext ? (haiku ? 5 : 2) : 1;

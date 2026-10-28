@@ -81,6 +81,7 @@ test('pricing: September models price every token class and dated snapshots', ()
     ['gpt-6-sol', [2, 10, 0.2, 2.5]],
     ['gpt-6-luna', [0.1, 0.5, 0.01, 0.125]],
     ['gpt-6.1-sol', [2, 10, 0.1, 2.5]],
+    ['gpt-6.1-terra', [1, 5, 0.05, 1.25]],
     ['claude-opus-5-5', [4, 20, 0.2, 5]],
     ['claude-opus-5.5', [4, 20, 0.2, 5]],
     ['claude-sonnet-5-5', [2, 10, 0.1, 2.5]],
@@ -100,7 +101,7 @@ test('pricing: September models price every token class and dated snapshots', ()
 });
 
 test('pricing: new GPT models count cache tokens toward the 272K boundary', () => {
-  for (const model of ['gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol']) {
+  for (const model of ['gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol', 'gpt-6.1-terra']) {
     assert.equal(billsCacheWrites(`${model}-20261001`), true);
     assert.equal(hasLongContextSurcharge(`${model}-20261001`), true);
     const [input, output, read, write] = pricingTable()[model];

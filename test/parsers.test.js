@@ -113,6 +113,7 @@ for (const [model, expected, expectedMissingWrite] of [
   ['gpt-6-sol', 1.025, 0.0106],
   ['gpt-6-luna', 0.05125, 0.00053],
   ['gpt-6.1-sol', 1.0, 0.0098],
+  ['gpt-6.1-terra', 0.5, 0.0049],
 ]) {
 test(`codex: ${model} splits cache writes and prices each long-context request`, async () => {
   const root = mkdtempSync(join(tmpdir(), 'aimet-codex-gpt56-'));

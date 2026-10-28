@@ -32,3 +32,15 @@ test('Codex cost label states the standard-tier estimation reason', async () => 
   assert.match(costLabel({ tool: 'codex', estimated: 1 }), /estimated: standard tier; billed tier not recorded/);
   assert.doesNotMatch(costLabel({ tool: 'claude', estimated: 0 }), /billed tier not recorded/);
 });
+
+
+test('Codex and Markdown report disclose the unobserved cache lifetime', async () => {
+  const { costLabel } = await import('../dist/report.js');
+  const { reportMd, sessionMd } = await import('../dist/markdown.js');
+  const row = { tool: 'codex', model: 'gpt-6.1-terra', estimated: 1, cost_usd: .5,
+    started_at: '2026-10-28T00:00:00Z', last_event_at: '2026-10-28T00:01:00Z' };
+  assert.match(costLabel(row), /30m cache-write baseline.*cache TTL not recorded/);
+  assert.match(sessionMd(row), /30m cache-write baseline.*cache TTL not recorded/);
+  assert.match(reportMd([], {}), /30分単価.*キャッシュ保存期間/);
+  assert.doesNotMatch(costLabel({ tool: 'copilot', cost_source: 'actual', cost_usd: .5 }), /cache TTL/);
+});
