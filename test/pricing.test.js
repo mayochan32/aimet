@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   billsCacheWrites,
+  claudeCostUsd,
   costUsd,
   copilotCostUsd,
   hasLongContextSurcharge,
@@ -101,7 +102,7 @@ test('pricing: September models price every token class and dated snapshots', ()
 });
 
 test('pricing: new GPT models count cache tokens toward the 272K boundary', () => {
-  for (const model of ['gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol', 'gpt-6.1-terra']) {
+  for (const model of ['gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6.2-astra', 'gpt-6.2-sol']) {
     assert.equal(billsCacheWrites(`${model}-20261001`), true);
     assert.equal(hasLongContextSurcharge(`${model}-20261001`), true);
     const [input, output, read, write] = pricingTable()[model];
@@ -114,8 +115,8 @@ test('pricing: new GPT models count cache tokens toward the 272K boundary', () =
       ((200_000 * input + 70_000 * read + 2_001 * write) * 2 + 1_000 * output * 1.5) / 1e6);
     }
   }
-  assert.equal(billsCacheWrites('gpt-6.2-sol'), false);
-  assert.equal(costUsd('gpt-6.2-sol', usage({ input: 1 })), null);
+  assert.equal(billsCacheWrites('gpt-6.3-sol'), false);
+  assert.equal(costUsd('gpt-6.3-sol', usage({ input: 1 })), null);
 });
 
 test('pricing: Copilot Grok 4.7 doubles input and output only above 200K', () => {
@@ -147,4 +148,64 @@ test('pricing: Sonnet 5.5 cache reads and Copilot Gemini 4 Argon promotion', () 
   }
   assert.equal(copilotCostUsd('gemini-4-argon', usage({ input: 100_000, cacheRead: 200_000, output: 10_000 })), .32);
   assert.equal(costUsd('gemini-4-argon', usage({ input: 1 })), null, 'Copilot promotion is not a BYOK rate');
+});
+
+
+test('pricing: GPT-6.2 and Claude 5.2 price each category and exact snapshots', () => {
+  const models = [
+    ['gpt-6.2-astra', [8, 40, .4, 10], true],
+    ['gpt-6.2-sol', [2, 10, .1, 2.5], true],
+    ['claude-fable-5-2', [8, 40, .2, 10], true],
+    ['claude-fable-5.2', [8, 40, .2, 10], true],
+    ['claude-mythos-5-2', [8, 40, .2, 10], false],
+    ['claude-mythos-5.2', [8, 40, .2, 10], false],
+  ];
+  for (const [model, rates, inCopilot] of models) {
+    for (const id of [model, `${model}-20261117`]) {
+      for (const [i, field] of ['input', 'output', 'cacheRead', 'cacheWrite'].entries()) {
+        const tokens = usage({ [field]: 100_000 });
+        assert.equal(costUsd(id, tokens), rates[i] / 10, `${id}: ${field}`);
+        assert.equal(copilotCostUsd(id, tokens), inCopilot ? rates[i] / 10 : null);
+      }
+    }
+    assert.equal(costUsd(`${model}-future`, usage({ input: 1 })), null);
+  }
+  for (const model of ['claude-fable-5-2', 'claude-fable-5.2', 'claude-mythos-5-2', 'claude-mythos-5.2']) {
+    const tokens = usage({ input: 100_000, output: 1_000, cacheRead: 50_000, cacheWrite: 10_000 });
+    const standard = .95;
+    assert.deepEqual(claudeCostUsd(`${model}-20261117`, tokens, 'standard'), { cost: standard, estimated: false });
+    assert.deepEqual(claudeCostUsd(`${model}-20261117`, tokens, 'fast'), { cost: standard * 2, estimated: false });
+    assert.deepEqual(claudeCostUsd(model, tokens, undefined), { cost: standard, estimated: true });
+  }
+});
+
+test('pricing: Copilot Gemini and MAI rates do not leak into provider-side BYOK', () => {
+  const models = [
+    ['gemini-4-carbon', [2, 10, .1, 0]],
+    ['gemini-4-hydrogen', [1.5, 7.5, .075, 0]],
+    ['gemini-4-neon', [3, 15, .15, 0]],
+    ['mai-code-2', [.5, 2.5, .025, 0]],
+    ['mai-code-2-flash', [.05, .25, .005, 0]],
+  ];
+  for (const [model, rates] of models) {
+    for (const id of [model, `${model}-20261117`]) {
+      for (const [i, field] of ['input', 'output', 'cacheRead', 'cacheWrite'].entries()) {
+        const tokens = usage({ [field]: 100_000 });
+        assert.equal(copilotCostUsd(id, tokens), rates[i] / 10);
+        assert.equal(costUsd(id, tokens), null);
+      }
+    }
+    assert.equal(copilotCostUsd(`${model}-future`, usage({ input: 1 })), null);
+    assert.equal(copilotCostUsd(model, usage({ input: null, output: 1 })), null);
+  }
+  assert.equal(costUsd('codex-auto-review', usage({ input: 1 })), null);
+  assert.equal(costUsd('codex-auto-review', usage()), 0);
+});
+
+test('pricing: GPT-5.6 Cyber never invents an unpublished long-context rate', () => {
+  assert.equal(hasLongContextSurcharge('gpt-5.6-cyber'), false);
+  assert.equal(costUsd('gpt-5.6-cyber', usage({ input: 272_000 })), 3.4);
+  assert.equal(costUsd('gpt-5.6-cyber-20261105', usage({ input: 272_001 })), null);
+  assert.equal(costUsd('gpt-5.6-cyber', usage({ input: 272_001 }),
+    { applyLongContextSurcharge: false }), null);
 });

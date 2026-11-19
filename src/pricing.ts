@@ -10,7 +10,11 @@ import type { TokenUsage } from './types.js';
  * prefix, with the longest matching key taking precedence.
  */
 const DEFAULT_PRICING: Record<string, [number, number, number, number]> = {
-  // Anthropic (official pricing checked 2026-10-20)
+  // Anthropic (official pricing checked 2026-11-19)
+  'claude-fable-5-2': [8, 40, 0.2, 10],
+  'claude-fable-5.2': [8, 40, 0.2, 10],
+  'claude-mythos-5-2': [8, 40, 0.2, 10],
+  'claude-mythos-5.2': [8, 40, 0.2, 10],
   'claude-haiku-5-5': [0.1, 0.5, 0.01, 0.125],
   'claude-haiku-5.5': [0.1, 0.5, 0.01, 0.125],
   'claude-fable-5-1': [10, 50, 0.25, 12.5],
@@ -48,6 +52,8 @@ const DEFAULT_PRICING: Record<string, [number, number, number, number]> = {
   // OpenAI. GPT-5.6/6 writes use 30-minute baseline rates (1.25x input).
   // 12-hour writes cost 2.5x input, but supported rollout/OTel logs omit TTL.
   // Do not treat this baseline estimate as observed cache lifetime.
+  'gpt-6.2-astra': [8, 40, 0.4, 10],
+  'gpt-6.2-sol': [2, 10, 0.1, 2.5],
   'gpt-6-astra': [10, 50, 1, 12.5],
   'gpt-6-sol': [2, 10, 0.2, 2.5],
   'gpt-6-luna': [0.1, 0.5, 0.01, 0.125],
@@ -81,6 +87,9 @@ const DEFAULT_PRICING: Record<string, [number, number, number, number]> = {
 
 /** GitHub-hosted Copilot token prices, distinct from provider-side BYOK prices. */
 const COPILOT_PRICING: Record<string, [number, number, number, number]> = {
+  'gpt-6.2-astra': [8, 40, 0.4, 10],
+  'gpt-6.2-sol': [2, 10, 0.1, 2.5],
+  'claude-fable-5-2': [8, 40, 0.2, 10],
   // Historical Copilot logs remain calculable after a model leaves the current catalog.
   'gpt-5': [1.25, 10, 0.125, 0],
   'gpt-5.2': [1.75, 14, 0.175, 0],
@@ -124,8 +133,14 @@ const COPILOT_PRICING: Record<string, [number, number, number, number]> = {
   'gemini-3.7-flash': [0.75, 3.75, 0.075, 0],
   // GitHub promotion until 2026-12-01; recheck before extending these rates.
   'gemini-4-argon': [2, 10, 0.1, 0],
+  // Published promotional rates; no runtime date-based switch (see README).
+  'gemini-4-carbon': [2, 10, 0.1, 0], // Until 2026-12-01.
+  'gemini-4-hydrogen': [1.5, 7.5, 0.075, 0],
+  'gemini-4-neon': [3, 15, 0.15, 0],
   'gemini-3.8-flash': [0.75, 3.75, 0.075, 0],
   'mai-code-1.1-flash': [0.2, 1.2, 0.02, 0],
+  'mai-code-2': [0.5, 2.5, 0.025, 0], // Promotion until 2027-05-17.
+  'mai-code-2-flash': [0.05, 0.25, 0.005, 0], // Promotion until 2027-05-17.
   'grok-4.5': [2, 6, 0.5, 0],
   'grok-4.6': [2, 6, 0.5, 0],
   'grok-4.7': [2, 6, 0.5, 0],
@@ -200,6 +215,7 @@ function builtinModelKey(model: string): string | null {
 }
 
 const CLAUDE_FAST_MODELS = new Set([
+  'claude-fable-5-2', 'claude-fable-5.2', 'claude-mythos-5-2', 'claude-mythos-5.2',
   'claude-opus-5-5', 'claude-opus-5.5', 'claude-opus-5',
   'claude-opus-4-8', 'claude-opus-4.8',
 ]);
@@ -222,10 +238,11 @@ export function claudeCostUsd(
 }
 
 const LONG_CONTEXT_MODELS = new Set([
+  'gpt-6.2-astra', 'gpt-6.2-sol',
   'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol', 'gpt-6.1-terra',
   'gpt-5.4', 'gpt-5.4-pro',
   'gpt-5.5', 'gpt-5.5-pro',
-  'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-cyber',
+  'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
 ]);
 
 export function isHaiku55(model: string): boolean {
@@ -242,7 +259,8 @@ export function hasLongContextSurcharge(model: string): boolean {
 export function billsCacheWrites(model: string): boolean {
   const key = builtinModelKey(model);
   return key !== null && (key.startsWith('gpt-5.6') ||
-    ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol', 'gpt-6.1-terra'].includes(key));
+    ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol', 'gpt-6.1-terra',
+      'gpt-6.2-astra', 'gpt-6.2-sol'].includes(key));
 }
 
 /** API-equivalent cost in USD, or null when a non-zero usage model is unknown. */
@@ -270,6 +288,11 @@ export function costUsd(
   const pricedInput = options.promptTokens !== undefined ? options.promptTokens
     : completePrompt || !haiku ? (t.input ?? 0) + (t.cacheRead ?? 0) + (t.cacheWrite ?? 0) : null;
   if (haiku && (pricedInput === null || t.output === null)) return null;
+  // The official table has no long-context rate for GPT-5.6 Cyber.
+  // A general GPT multiplier is not evidence of this model's price.
+  if (builtinModelKey(model) === 'gpt-5.6-cyber' && pricedInput !== null && pricedInput > 272_000) {
+    return null;
+  }
   const longContext = options.applyLongContextSurcharge !== false &&
     hasLongContextSurcharge(model) && pricedInput !== null && pricedInput > 272_000;
   const haikuLong = haiku && pricedInput !== null && pricedInput > 100_000;
@@ -301,7 +324,8 @@ export function copilotCostUsd(model: string, t: TokenUsage): number | null {
   const threshold = haiku ? 100_000 : key === 'gpt-5.6-luna' || key === 'grok-4.5' || key === 'grok-4.6' || key === 'grok-4.7'
     ? 200_000
     : ['gpt-5.4', 'gpt-5.5', 'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra',
-      'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol', 'gpt-6.1-terra']
+      'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol', 'gpt-6.1-terra',
+      'gpt-6.2-astra', 'gpt-6.2-sol']
       .includes(key) ? 272_000 : Infinity;
   const longContext = t.input + t.cacheRead + (t.cacheWrite ?? 0) > threshold;
   const inputMultiplier = longContext ? (haiku ? 5 : 2) : 1;
