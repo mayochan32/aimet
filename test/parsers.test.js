@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { rmSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -114,6 +114,8 @@ for (const [model, expected, expectedMissingWrite] of [
   ['gpt-6-luna', 0.05125, 0.00053],
   ['gpt-6.1-sol', 1.0, 0.0098],
   ['gpt-6.1-terra', 0.5, 0.0049],
+  ['gpt-6.2-astra', 4, 0.0392],
+  ['gpt-6.2-sol', 1, 0.0098],
 ]) {
 test(`codex: ${model} splits cache writes and prices each long-context request`, async () => {
   const root = mkdtempSync(join(tmpdir(), 'aimet-codex-gpt56-'));
@@ -606,6 +608,19 @@ test('copilot OTel SQLite: aggregates BYOK provider, cache write and reasoning t
   assert.equal(m.metricScope, 'tree');
   assert.equal(m.costSource, 'estimated');
   assert.ok(Math.abs(m.costUsd - 0.003495) < 1e-12);
+  // A new-style value overrides the legacy alias, including measured zero.
+  const writer = new DatabaseSync(path);
+  for (const [value, expectedWrite] of [[0, 0], [200, 200], ['invalid', 100]]) {
+    writer.prepare('INSERT OR REPLACE INTO span_attributes (span_id, key, value) VALUES (?, ?, ?)')
+      .run('span-1', 'gen_ai.usage.cache_write.input_tokens', String(value));
+    const [row] = await copilotOtelParser.parseFile(path);
+    assert.equal(row.tokens.cacheWrite, expectedWrite);
+    assert.equal(row.tokens.input, 600 - expectedWrite);
+    const expectedCost = ((600 - expectedWrite) * 3 + 100 * 15 + 400 * .3 + expectedWrite * 3.75) / 1e6;
+    assert.ok(Math.abs(row.costUsd - expectedCost) < 1e-12);
+  }
+  writer.close();
+
 });
 
 test('copilot OTel SQLite: infers a direct OpenAI BYOK call and ignores utility chats', async () => {
@@ -811,7 +826,7 @@ test('copilot CLI OTel: parent/child calls count tokens once and root credits on
       'gen_ai.operation.name': 'chat', 'gen_ai.conversation.id': 'child-session',
       'gen_ai.provider.name': 'github', 'gen_ai.response.model': 'gpt-5.6-luna',
       'gen_ai.usage.input_tokens': 100, 'gen_ai.usage.output_tokens': 20,
-      'gen_ai.usage.cache_read.input_tokens': 30, 'gen_ai.usage.cache_creation.input_tokens': 5,
+      'gen_ai.usage.cache_read.input_tokens': 30, 'gen_ai.usage.cache_write.input_tokens': 5,
       'github.copilot.nano_aiu': 1000000000, 'server.address': 'api.githubcopilot.com',
     }),
   ];
@@ -901,4 +916,69 @@ test('claude: Haiku length uses actual 1h writes, each request and advisor indep
   assert.equal((await claudeParser.parseFile(file)).costUsd, null);
   writeFileSync(file, JSON.stringify(record('missing', undefined)));
   assert.equal((await claudeParser.parseFile(file)).costUsd, null);
+});
+
+
+test('Copilot OTel aliases preserve zero, fallback and cache-write token partitioning', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-otel-write-aliases-'));
+  const path = join(root, 'copilot-otel.jsonl');
+  const current = 'gen_ai.usage.cache_write.input_tokens';
+  const legacy = 'gen_ai.usage.cache_creation.input_tokens';
+  try {
+    for (const [extra, expectedWrite] of [
+      [{ [current]: 300 }, 300],
+      [{ [legacy]: 300 }, 300],
+      [{ [current]: 300, [legacy]: 300 }, 300],
+      [{ [current]: 0, [legacy]: 300 }, 0],
+      [{ [current]: -1, [legacy]: 300 }, 300],
+      [{}, null],
+    ]) {
+      writeFileSync(path, JSON.stringify({
+        traceId: 'alias-trace', spanId: 'alias-chat',
+        startTime: '2026-11-19T00:00:00Z', endTime: '2026-11-19T00:00:01Z',
+        attributes: {
+          'gen_ai.operation.name': 'chat', 'gen_ai.conversation.id': 'alias-session',
+          'gen_ai.provider.name': 'github', 'gen_ai.response.model': 'gpt-6.2-sol',
+          'gen_ai.usage.input_tokens': 1000, 'gen_ai.usage.output_tokens': 50,
+          'gen_ai.usage.cache_read.input_tokens': 200, ...extra,
+        },
+      }) + '\n');
+      for (const parser of [copilotOtelParser, copilotCliOtelParser]) {
+        const [row] = await parser.parseFile(path);
+        assert.equal(row.tokens.cacheWrite, expectedWrite);
+        assert.equal(row.tokens.input, 800 - (expectedWrite ?? 0));
+        const expectedCost = ((800 - (expectedWrite ?? 0)) * 2 + 200 * .1 +
+          (expectedWrite ?? 0) * 2.5 + 50 * 10) / 1e6;
+        assert.ok(Math.abs(row.costUsd - expectedCost) < 1e-12);
+        assert.equal(row.costSource, 'estimated');
+      }
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('Claude Fable/Mythos 5.2 fast mode, one-hour writes and advisor are independently priced', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'aimet-fable52-'));
+  const file = join(root, 'session.jsonl');
+  try {
+    const usage = {
+      input_tokens: 100_000, output_tokens: 1_000, cache_read_input_tokens: 50_000,
+      cache_creation_input_tokens: 10_000,
+      cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 10_000 },
+      speed: 'fast',
+      iterations: [{ type: 'advisor_message', model: 'claude-mythos-5-2', speed: 'standard',
+        input_tokens: 20_000, output_tokens: 500, cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0 }],
+    };
+    const record = { type: 'assistant', timestamp: '2026-11-19T00:00:00Z', sessionId: 'fable52',
+      message: { id: 'fable52-message', model: 'claude-fable-5-2', usage } };
+    // Duplicate stream snapshots must not charge the executor or advisor twice.
+    writeFileSync(file, [record, record].map(JSON.stringify).join('\n') + '\n');
+    const row = await claudeParser.parseFile(file);
+    assert.equal(row.model, 'mixed');
+    assert.equal(row.tokens.input, 120_000);
+    assert.equal(row.tokens.output, 1_500);
+    assert.equal(row.tokens.cacheWrite, 10_000, 'stored tokens retain raw TTL count');
+    assert.ok(Math.abs(row.costUsd - 2.2) < 1e-12); // executor 2.02 + advisor .18
+    assert.equal(row.estimated, false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

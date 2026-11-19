@@ -26,7 +26,8 @@ const ATTR = {
   input: 'gen_ai.usage.input_tokens',
   output: 'gen_ai.usage.output_tokens',
   cacheRead: 'gen_ai.usage.cache_read.input_tokens',
-  cacheWrite: 'gen_ai.usage.cache_creation.input_tokens',
+  cacheWrite: 'gen_ai.usage.cache_write.input_tokens',
+  cacheWriteLegacy: 'gen_ai.usage.cache_creation.input_tokens',
   reasoning: 'gen_ai.usage.reasoning.output_tokens',
   reasoningLegacy: 'gen_ai.usage.reasoning_tokens',
   responseId: 'gen_ai.response.id',
@@ -71,6 +72,7 @@ type DbSpanRow = {
   reasoning_tokens: number | null;
   root_session_id: string | null;
   cache_write: string | null;
+  cache_write_legacy: string | null;
   reasoning_output: string | null;
   credits_nano: string | null;
   server_address: string | null;
@@ -123,6 +125,7 @@ function sqliteObservations(path: string): Observation[] | null {
                ORDER BY root.start_time_ms LIMIT 1
              ) AS root_session_id,
              (SELECT value FROM span_attributes WHERE span_id = s.span_id AND key = ?) AS cache_write,
+             (SELECT value FROM span_attributes WHERE span_id = s.span_id AND key = ?) AS cache_write_legacy,
              (SELECT value FROM span_attributes WHERE span_id = s.span_id AND key = ?) AS reasoning_output,
              COALESCE(
                (SELECT value FROM span_attributes WHERE span_id = s.span_id AND key = ?),
@@ -134,7 +137,8 @@ function sqliteObservations(path: string): Observation[] | null {
         AND s.input_tokens IS NOT NULL
         AND s.output_tokens IS NOT NULL
       ORDER BY s.start_time_ms
-    `).all(ATTR.cacheWrite, ATTR.reasoning, ATTR.creditsNanoCanonical, ATTR.creditsNano, ATTR.server) as DbSpanRow[];
+    `).all(ATTR.cacheWrite, ATTR.cacheWriteLegacy, ATTR.reasoning,
+      ATTR.creditsNanoCanonical, ATTR.creditsNano, ATTR.server) as DbSpanRow[];
 
     const observations: Observation[] = [];
     for (const row of rows) {
@@ -165,7 +169,7 @@ function sqliteObservations(path: string): Observation[] | null {
         input: finite(row.input_tokens) ?? 0,
         output: finite(row.output_tokens) ?? 0,
         cacheRead: finite(row.cached_tokens),
-        cacheWrite: finite(row.cache_write),
+        cacheWrite: finite(row.cache_write) ?? finite(row.cache_write_legacy),
         reasoning: finite(row.reasoning_output) ?? finite(row.reasoning_tokens),
         creditsNano,
       });
@@ -267,7 +271,9 @@ function observationFromJson(
     input,
     output,
     cacheRead: finite(attrs[ATTR.cacheRead]),
-    cacheWrite: finite(attrs[ATTR.cacheWrite]),
+    // CLI/Agent Host and the VS Code Local harness use different names for
+    // the same count. Prefer a valid canonical value (including zero), never sum.
+    cacheWrite: finite(attrs[ATTR.cacheWrite]) ?? finite(attrs[ATTR.cacheWriteLegacy]),
     reasoning: finite(attrs[ATTR.reasoning]) ?? finite(attrs[ATTR.reasoningLegacy]),
     creditsNano,
   };

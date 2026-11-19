@@ -14,6 +14,10 @@ test('price overrides preserve built-in billing conditions and Codex estimation'
     writeFileSync(join(root, '.aimet/pricing.json'), JSON.stringify({
       'gpt-6.1-sol-20260929': [3, 15, 0.2, 4],
       'gpt-6.1-terra-20261026': [3, 15, 0.2, 4],
+      'gpt-6.2-astra-20261117': [3, 15, 0.2, 4],
+      'gpt-6.2-sol-20261117': [3, 15, 0.2, 4],
+      'claude-fable-5-2-20261117': [5, 25, 0.3, 6.25],
+      'claude-mythos-5-2-20261117': [5, 25, 0.3, 6.25],
       'claude-opus-5-5-20260922': [5, 25, 0.3, 6.25],
       'gpt-6': [1, 2, 0.1, 0],
       'claude-haiku-5-5-20261008': [1, 5, .1, 1.25],
@@ -26,6 +30,14 @@ test('price overrides preserve built-in billing conditions and Codex estimation'
     assert.equal(costUsd(model, tokens), 1.8225);
     assert.equal(costUsd('gpt-6.1-terra-20261026', tokens), 1.8225);
     assert.equal(billsCacheWrites('gpt-6.1-terra-20261026'), true);
+    for (const model of ['gpt-6.2-astra-20261117', 'gpt-6.2-sol-20261117']) {
+      assert.equal(costUsd(model, tokens), 1.8225);
+      assert.equal(billsCacheWrites(model), true);
+      assert.equal(hasLongContextSurcharge(model), true);
+    }
+    for (const model of ['claude-fable-5-2-20261117', 'claude-mythos-5-2-20261117']) {
+      assert.deepEqual(claudeCostUsd(model, tokens, 'fast'), { cost: 3.05, estimated: false });
+    }
     assert.equal(hasLongContextSurcharge('gpt-6-future'), false);
     assert.equal(billsCacheWrites('gpt-6-future'), false);
     assert.equal(costUsd('gpt-6-future', tokens), 0.302, 'user prefixes still set prices');

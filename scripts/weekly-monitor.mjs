@@ -13,6 +13,7 @@ export const SOURCES = [
   ['Claude Code changelog', 'https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md'],
   ['GitHub Copilot models and pricing', 'https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing.md'],
   ['GitHub Copilot CLI OTel', 'https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference.md'],
+  ['GitHub Copilot OTel reference', 'https://docs.github.com/en/copilot/reference/enterprise-administrators/opentelemetry-reference.md'],
   ['GitHub Copilot CLI changelog', 'https://raw.githubusercontent.com/github/copilot-cli/main/changelog.md'],
   ['VS Code agent OTel', 'https://raw.githubusercontent.com/microsoft/vscode-docs/main/docs/agents/guides/monitoring-agents.md'],
 ];
